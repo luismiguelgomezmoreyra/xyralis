@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xyralis - Satellite Crop Stress Analysis</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --secondary: #18bc9c;
+            --accent: #f39c12;
+            --bg-light: #ecf0f1;
+            --bg-white: #ffffff;
+            --text-dark: #2c3e50;
+            --text-light: #7f8c8d;
+            --healthy: #27ae60;
+            --mild: #f39c12;
+            --severe: #e74c3c;
+            --uncertain: #95a5a6;
+            --border: #bdc3c7;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            background-color: var(--bg-light);
+            color: var(--text-dark);
+        }
+
+        /* Top Bar */
+        #top-bar {
+            height: 60px;
+            background-color: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            z-index: 1100;
+        }
+        .logo {
+            font-size: 1.5rem;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .logo span {
+            color: var(--secondary);
+        }
+        .top-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        /* Main Layout */
+        #main-container {
+            display: flex;
+            flex: 1;
+            height: calc(100vh - 60px);
+            overflow: hidden;
+            min-height: 0; /* Important for Firefox flex scrolling */
+        }
+        #map-container {
+            width: 70%;
+            height: 100%;
+            position: relative;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .map-overlay-control {
+            position: absolute;
+            top: 20px;
+            left: 50px;
+            z-index: 1000;
+            background: rgba(255,255,255,0.9);
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.9rem;
+        }
+
+        #sidebar {
+            width: 30%;
+            height: 100%;
+            background: var(--bg-white);
+            display: flex;
+            flex-direction: column;
+            border-left: 1px solid var(--border);
+            z-index: 1000;
+            transition: transform 0.3s ease;
+            min-width: 350px;
+            min-height: 0;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            background: var(--bg-light);
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 12px 5px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--text-light);
+            transition: all 0.2s;
+            border-bottom: 3px solid transparent;
+            font-size: 0.85rem;
+        }
+        .tab-btn:hover {
+            color: var(--primary);
+        }
+        .tab-btn.active {
+            color: var(--secondary);
+            border-bottom-color: var(--secondary);
+            background: var(--bg-white);
+        }
+
+        /* Tab Content */
+        .tab-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: none;
+            min-height: 0;
+        }
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Loading Overlay */
+        .loader-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(255,255,255,0.7);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 110;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+        }
+        .loader-overlay.active {
+            opacity: 1;
+            pointer-events: all;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid var(--secondary);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Error Box */
+        .error-msg {
+            background: #fadbd8;
+            color: #c0392b;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: none;
+            font-size: 0.9rem;
+        }
+
+        /* Analysis Tab Styles */
+        .header-panel {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .badge {
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.85rem;
+            color: white;
+            text-transform: uppercase;
+        }
+        .badge.healthy { background: var(--healthy); }
+        .badge.mild_stress { background: var(--mild); }
+        .badge.severe_stress { background: var(--severe); }
+        .badge.uncertain { background: var(--uncertain); }
+        
+        .location-info {
+            font-size: 0.85rem;
+            color: var(--text-light);
+            text-align: right;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: var(--bg-light);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .card h4 {
+            font-size: 0.85rem;
+            color: var(--text-light);
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+        
+        /* NDVI Gauge */
+        .gauge-container {
+            position: relative;
+            width: 100%;
+            height: 80px;
+        }
+        .gauge-svg {
+            width: 100%;
+            height: 100%;
+            overflow: visible;
+        }
+        .gauge-val {
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+
+        /* Score */
+        .score-val {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: var(--primary);
+        }
+
+        /* Indices Table */
+        .indices-list {
+            margin-bottom: 20px;
+        }
+        .index-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        .index-bar-bg {
+            flex: 1;
+            height: 6px;
+            background: #ddd;
+            margin: 0 10px;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .index-bar-fill {
+            height: 100%;
+            background: var(--secondary);
+            transition: width 0.5s ease-out;
+        }
+
+        /* Issues & Recommendations */
+        .issues-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        .issue-pill {
+            background: #ffeaa7;
+            color: #d35400;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .rec-box {
+            background: #e8f8f5;
+            border-left: 4px solid var(--secondary);
+            padding: 15px;
+            border-radius: 0 8px 8px 0;
+            margin-bottom: 20px;
+        }
+        .rec-box p { font-size: 0.95rem; margin-bottom: 10px; }
+        .action-days { font-weight: bold; color: var(--primary); }
+
+        /* Confidence */
+        .confidence-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+            margin-bottom: 20px;
+        }
+
+        /* Thumbnails */
+        .thumbnails {
+            display: flex;
+            gap: 10px;
+        }
+        .thumb {
+            flex: 1;
+            height: 100px;
+            background-color: #ddd;
+            border-radius: 5px;
+            cursor: pointer;
+            background-size: cover;
+            background-position: center;
+            border: 1px solid var(--border);
+            transition: transform 0.2s;
+        }
+        .thumb:hover { transform: scale(1.02); }
+
+        /* Sim Controls */
+        .control-group {
+            margin-bottom: 15px;
+        }
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+        .control-group input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+        .btn {
+            background: var(--secondary);
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn-group { display: flex; gap: 10px; margin-bottom: 20px; }
+        .btn-group .btn { flex: 1; }
+        .btn-danger { background: var(--severe); }
+
+        /* Batch Tab */
+        .batch-table-container {
+            flex: 1;
+            overflow-y: auto;
+            min-height: 0;
+            margin-bottom: 15px;
+        }
+        .batch-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        .batch-table th, .batch-table td {
+            border: 1px solid var(--border);
+            padding: 8px;
+            text-align: left;
+        }
+        .batch-table th { background: var(--bg-light); position: sticky; top: 0; }
+        .batch-add-row { display: flex; gap: 5px; margin-bottom: 15px; flex-shrink: 0; }
+        .batch-add-row input { flex: 1; padding: 6px; border: 1px solid var(--border); min-width: 0; }
+        
+        /* Status Bar */
+        #status-bar {
+            height: 35px;
+            background: var(--bg-light);
+            border-top: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 15px;
+            font-size: 0.75rem;
+            color: var(--text-light);
+            flex-shrink: 0;
+        }
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--uncertain);
+        }
+        .dot.active { background: var(--healthy); }
+        .dot.error { background: var(--severe); }
+
+        /* Modal */
+        #image-modal {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        #image-modal.active { display: flex; }
+        #modal-img { max-width: 90%; max-height: 90%; border: 3px solid white; }
+        #modal-close {
+            position: absolute;
+            top: 20px; right: 30px;
+            color: white; font-size: 2rem; cursor: pointer;
+        }
+
+        /* Keyboard Hints */
+        .kbd-hint {
+            display: inline-block;
+            background: #eee; border: 1px solid #ccc;
+            border-radius: 3px; padding: 2px 5px;
+            font-family: monospace; font-size: 0.7rem;
+            margin-left: 5px; color: #333;
+        }
+
+        /* Satellite SVG Marker Class */
+        .sat-marker { filter: drop-shadow(0 0 3px rgba(0,0,0,0.5)); }
+
+        @media (max-width: 768px) {
+            #main-container { flex-direction: column; }
+            #map-container { width: 100%; height: 60%; }
+            #sidebar { width: 100%; height: 40%; border-left: none; border-top: 2px solid var(--primary); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Top Bar -->
+    <div id="top-bar">
+        <div class="logo">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--secondary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            Xyralis <span>Pro</span>
+        </div>
+        <div class="top-controls">
+            <div id="sat-pos-display" style="font-family: monospace; font-size: 0.85rem; color: #aaa;">Searching sat...</div>
+            <button class="btn" onclick="runDemo()" style="padding: 5px 10px; font-size: 0.8rem;">Run Demo <span class="kbd-hint">D</span></button>
+            <button class="btn btn-danger" onclick="clearMarkers()" style="padding: 5px 10px; font-size: 0.8rem;">Clear Map <span class="kbd-hint">C</span></button>
+        </div>
+    </div>
+
+    <!-- Main Layout -->
+    <div id="main-container">
+        
+        <!-- Left: Map -->
+        <div id="map-container">
+            <div class="map-overlay-control">
+                <label for="overlay-opacity">Sentinel Overlay:</label>
+                <input type="range" id="overlay-opacity" min="0" max="100" value="70" oninput="updateOverlayOpacity()">
+                <span id="opacity-val">70%</span>
+            </div>
+            <div id="map"></div>
+        </div>
+
+        <!-- Right: Sidebar -->
+        <div id="sidebar">
+            
+            <div class="tabs">
+                <button id="btn-tab-analysis" class="tab-btn active" onclick="switchTab('analysis')">Analysis</button>
+                <button id="btn-tab-timeseries" class="tab-btn" onclick="switchTab('timeseries')">Time Series</button>
+                <button id="btn-tab-sim" class="tab-btn" onclick="switchTab('sim')">Sim Control</button>
+                <button id="btn-tab-batch" class="tab-btn" onclick="switchTab('batch')">Batch</button>
+            </div>
+
+            <!-- Tab 1: Analysis -->
+            <div id="tab-analysis" class="tab-content active" style="position: relative;">
+                <div class="loader-overlay" id="analysis-loader">
+                    <div class="spinner"></div>
+                    <div style="margin-top: 15px; font-weight: 600;">Processing...</div>
+                </div>
+
+                <div id="analysis-error" class="error-msg"></div>
+
+                <div id="analysis-content" style="display: none;">
+                    <div class="header-panel">
+                        <div id="res-badge" class="badge">--</div>
+                        <div class="location-info">
+                            <div id="res-coords">--</div>
+                            <div id="res-time">--</div>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-grid">
+                        <div class="card">
+                            <h4>NDVI Status</h4>
+                            <div class="gauge-container">
+                                <svg class="gauge-svg" viewBox="0 0 100 50">
+                                    <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#ecf0f1" stroke-width="12" stroke-linecap="round"/>
+                                    <path id="ndvi-arc" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="var(--healthy)" stroke-width="12" stroke-linecap="round" stroke-dasharray="125.6" stroke-dashoffset="125.6" style="transition: stroke-dashoffset 0.8s ease-out, stroke 0.5s;"/>
+                                </svg>
+                                <div class="gauge-val" id="res-ndvi">0.00</div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <h4>Stress Score</h4>
+                            <div class="score-val" id="res-score">0</div>
+                            <div style="font-size: 0.75rem; color: var(--text-light);">0 (Healthy) - 100 (Severe)</div>
+                        </div>
+                    </div>
+
+                    <div class="indices-list">
+                        <h4>Spectral Indices</h4>
+                        <div class="index-item"><span>NDWI</span> <div class="index-bar-bg"><div class="index-bar-fill" id="bar-ndwi" style="width: 0%"></div></div> <span id="val-ndwi">0.00</span></div>
+                        <div class="index-item"><span>SWIR</span> <div class="index-bar-bg"><div class="index-bar-fill" id="bar-swir" style="width: 0%"></div></div> <span id="val-swir">0.00</span></div>
+                        <div class="index-item"><span>EVI</span> <div class="index-bar-bg"><div class="index-bar-fill" id="bar-evi" style="width: 0%"></div></div> <span id="val-evi">0.00</span></div>
+                    </div>
+
+                    <div class="issues-container" id="res-issues">
+                        <!-- Issue pills injected here -->
+                    </div>
+
+                    <div class="rec-box">
+                        <p id="res-rec">--</p>
+                        <div class="action-days">Action required in: <span id="res-days">--</span> days</div>
+                    </div>
+
+                    <div class="confidence-row">
+                        <div>Model Confidence: <strong id="res-conf">--%</strong></div>
+                        <div style="color: var(--text-light); font-size: 0.75rem;">Calibration OK</div>
+                    </div>
+
+                    <div class="thumbnails">
+                        <div class="thumb" id="thumb-sentinel" onclick="openModal(this.style.backgroundImage)" title="Sentinel False Color"></div>
+                        <div class="thumb" id="thumb-mapbox" onclick="openModal(this.style.backgroundImage)" title="Mapbox High-Res"></div>
+                    </div>
+                </div>
+                
+                <div id="analysis-empty" style="text-align: center; color: var(--text-light); padding-top: 50px;">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                    <p style="margin-top: 15px;">Click anywhere on the map to analyze crop stress.</p>
+                </div>
+            </div>
+
+            <!-- Tab 2: Time Series -->
+            <div id="tab-timeseries" class="tab-content">
+                <h3 style="margin-bottom: 15px;">NDVI Trends</h3>
+                <p style="font-size: 0.85rem; color: var(--text-light); margin-bottom: 15px;">Historical values for the selected area.</p>
+                <div style="width: 100%; height: 250px; position: relative;">
+                    <canvas id="trendChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Tab 3: Sim Control -->
+            <div id="tab-sim" class="tab-content" style="position: relative;">
+                <div class="loader-overlay" id="sim-loader"><div class="spinner"></div></div>
+                <div id="sim-error" class="error-msg"></div>
+
+                <h3 style="margin-bottom: 15px;">Satellite Simulation</h3>
+                
+                <div class="btn-group">
+                    <button class="btn" onclick="controlSim('start')">Start <span class="kbd-hint">Spc</span></button>
+                    <button class="btn" style="background:#f39c12" onclick="controlSim('pause')">Pause</button>
+                    <button class="btn btn-danger" onclick="controlSim('stop')">Stop</button>
+                </div>
+
+                <div class="control-group">
+                    <label>Start Time (UTC)</label>
+                    <input type="datetime-local" id="sim-start" step="1">
+                    <button class="btn" style="width:100%; margin-top:5px; font-size:0.8rem;" onclick="fastForwardSeason()">⏭ Fast Forward to Agric Season (Mar 2026)</button>
+                </div>
+
+                <div class="control-group">
+                    <label>Step Size (seconds)</label>
+                    <input type="number" id="sim-step" value="5" min="1" max="60">
+                </div>
+
+                <div class="control-group">
+                    <label>Replay Speed (x real-time)</label>
+                    <input type="number" id="sim-speed" value="1" min="0.1" max="20" step="0.1">
+                </div>
+            </div>
+
+            <!-- Tab 4: Batch -->
+            <div id="tab-batch" class="tab-content" style="position: relative; display: flex; flex-direction: column;">
+                <div class="loader-overlay" id="batch-loader"><div class="spinner"></div><div style="margin-top: 10px;">Batch Processing...</div></div>
+                <div id="batch-error" class="error-msg"></div>
+
+                <h3 style="margin-bottom: 15px; flex-shrink: 0;">Batch Analysis</h3>
+                <p style="font-size: 0.8rem; margin-bottom: 10px; color: var(--text-light); flex-shrink: 0;">Max 20 parcels.</p>
+                
+                <div class="batch-add-row">
+                    <input type="text" id="batch-lat" placeholder="Lat">
+                    <input type="text" id="batch-lon" placeholder="Lon">
+                    <input type="text" id="batch-name" placeholder="Name">
+                    <button class="btn" onclick="addBatchRow()" style="padding: 5px 15px;">+</button>
+                </div>
+
+                <div class="batch-table-container">
+                    <table class="batch-table" id="batch-table">
+                        <thead><tr><th>Name</th><th>Lat</th><th>Lon</th><th>Status</th><th>Act</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <div class="btn-group" style="flex-shrink: 0;">
+                    <button class="btn" onclick="runBatch()">Analyze All</button>
+                    <button class="btn" style="background:#2c3e50" onclick="exportBatchCSV()">Export CSV</button>
+                </div>
+            </div>
+
+            <!-- Status Bar -->
+            <div id="status-bar">
+                <div class="status-indicator">
+                    <div class="dot" id="ind-sim"></div> SimSat
+                </div>
+                <div class="status-indicator">
+                    <div class="dot" id="ind-api"></div> Model
+                </div>
+                <div id="stat-latency">Latency: --</div>
+                <div id="stat-cache">Cache: 0 items</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Modal -->
+    <div id="image-modal" onclick="closeModal()">
+        <span id="modal-close">&times;</span>
+        <img id="modal-img" src="" alt="Full Resolution" onclick="event.stopPropagation()">
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        const API_URL = "http://localhost:8000";
+        
+        // --- State ---
+        let map;
+        let sentinelOverlay;
+        let satMarker;
+        let trailSegments = []; // Array of L.polyline for fading effect
+        let markers = [];
+        let analysisHistory = JSON.parse(localStorage.getItem("cropAlertHistory") || "[]");
+        let chartInstance = null;
+        let isSimRunning = false;
+        let clickTimeout = null;
+        let currentPos = [0, 0];
+
+        const satSvg = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" style="background:var(--primary); border-radius:50%; padding:2px;"><path d="M12 2l-2 5h4zM4 10h16v2H4zM6 12v6h12v-6M10 18v4M14 18v4"/></svg>`;
+
+        // --- Initialization ---
+        function init() {
+            initMap();
+            initChart();
+            updateCacheCount();
+            
+            checkHealth();
+            setInterval(checkHealth, 5000);
+
+            pollSimulation();
+            setInterval(pollSimulation, 5000);
+
+            // Conditional refresh
+            setInterval(() => {
+                if (isSimRunning) refreshOverlay();
+            }, 30000);
+
+            analysisHistory.forEach(h => addMarkerToMap(h));
+
+            document.addEventListener('keydown', (e) => {
+                if (e.target.tagName === 'INPUT') return;
+                if (e.key.toLowerCase() === 'd') runDemo();
+                if (e.key.toLowerCase() === 'c') clearMarkers();
+                if (e.code === 'Space') {
+                    e.preventDefault();
+                    controlSim(isSimRunning ? 'pause' : 'start');
+                }
+            });
+
+            runDemo();
+        }
+
+        // --- Map Functions ---
+        function initMap() {
+            map = L.map('map').setView([45.1, 10.8], 4);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors', maxZoom: 18
+            }).addTo(map);
+
+            const satIcon = L.divIcon({ html: satSvg, className: 'sat-marker', iconSize: [24, 24] });
+            satMarker = L.marker([0, 0], {icon: satIcon, zIndexOffset: 1000}).addTo(map);
+
+            sentinelOverlay = L.imageOverlay('', [[-90, -180], [90, 180]], {opacity: 0.7}).addTo(map);
+            refreshOverlay();
+
+            map.on('click', (e) => {
+                if (clickTimeout) clearTimeout(clickTimeout);
+                clickTimeout = setTimeout(() => analyzeLocation(e.latlng.lat, e.latlng.lng), 300);
+            });
+        }
+
+        function refreshOverlay() {
+            const url = `${API_URL}/images/sentinel/current?bands=false_color&t=${Date.now()}`;
+            sentinelOverlay.setUrl(url);
+        }
+
+        function updateOverlayOpacity() {
+            const val = document.getElementById('overlay-opacity').value;
+            document.getElementById('opacity-val').innerText = `${val}%`;
+            sentinelOverlay.setOpacity(val / 100);
+        }
+
+        // --- API & UI ---
+        async function checkHealth() {
+            try {
+                const res = await fetch(`${API_URL}/health`);
+                const data = await res.json();
+                document.getElementById('ind-api').className = data.status === 'healthy' ? 'dot active' : 'dot error';
+                document.getElementById('ind-sim').className = data.simsat_available ? 'dot active' : 'dot error';
+            } catch (e) {
+                document.getElementById('ind-api').className = 'dot error';
+                document.getElementById('ind-sim').className = 'dot error';
+            }
+        }
+
+        async function pollSimulation() {
+            try {
+                const res = await fetch(`${API_URL}/simulation/status`);
+                if (!res.ok) throw new Error("Offline");
+                const data = await res.json();
+                const newPos = [data.satellite_position.lat, data.satellite_position.lon];
+                
+                // Trail update
+                if (currentPos[0] !== 0) {
+                    const segment = L.polyline([currentPos, newPos], {color: '#f39c12', weight: 2}).addTo(map);
+                    trailSegments.push(segment);
+                    if (trailSegments.length > 10) {
+                        const old = trailSegments.shift();
+                        map.removeLayer(old);
+                    }
+                    // Apply fading
+                    trailSegments.forEach((seg, idx) => {
+                        seg.setStyle({opacity: (idx + 1) / 11});
+                    });
+                }
+                
+                currentPos = newPos;
+                satMarker.setLatLng(newPos);
+                document.getElementById('sat-pos-display').innerText = `SAT: ${newPos[0].toFixed(2)}, ${newPos[1].toFixed(2)}`;
+                isSimRunning = data.simulation_speed > 0;
+            } catch (e) {
+                document.getElementById('sat-pos-display').innerText = `Disconnected`;
+                isSimRunning = false;
+            }
+        }
+
+        async function controlSim(cmd) {
+            showLoader('sim-loader');
+            hideError('sim-error');
+            try {
+                const res = await fetch(`${API_URL}/simulation/control`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        command: cmd,
+                        start_time: document.getElementById('sim-start').value || null,
+                        step_size_seconds: parseInt(document.getElementById('sim-step').value) || null,
+                        replay_speed: parseFloat(document.getElementById('sim-speed').value) || null
+                    })
+                });
+                if (!res.ok) throw new Error("Control failed");
+                pollSimulation();
+            } catch (e) {
+                showError('sim-error', e.message);
+            } finally { hideLoader('sim-loader'); }
+        }
+
+        function fastForwardSeason() {
+            document.getElementById('sim-start').value = "2026-03-01T08:00";
+            controlSim('start');
+        }
+
+        async function analyzeLocation(lat, lon) {
+            switchTab('analysis');
+            showLoader('analysis-loader');
+            hideError('analysis-error');
+            try {
+                const res = await fetch(`${API_URL}/analyze`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ latitude: lat, longitude: lon })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+                handleAnalysisResult(data, lat, lon);
+            } catch (e) { showError('analysis-error', e.message); }
+            finally { hideLoader('analysis-loader'); }
+        }
+
+        async function runDemo() {
+            switchTab('analysis');
+            showLoader('analysis-loader');
+            try {
+                const res = await fetch(`${API_URL}/demo`);
+                const data = await res.json();
+                handleAnalysisResult(data, -12.05, -75.20);
+                map.flyTo([-12.05, -75.20], 12);
+            } catch (e) { showError('analysis-error', "Demo failed"); }
+            finally { hideLoader('analysis-loader'); }
+        }
+
+        function handleAnalysisResult(data, lat, lon) {
+            const a = data.analysis;
+            analysisHistory.push({ lat, lon, ts: new Date().toISOString(), ...a });
+            localStorage.setItem("cropAlertHistory", JSON.stringify(analysisHistory));
+            addMarkerToMap({ lat, lon, ...a });
+            renderAnalysisPanel(data, lat, lon);
+            updateTimeSeries(lat, lon);
+            updateCacheCount();
+            document.getElementById('stat-latency').innerText = `Latency: ${a.inference_latency_ms.toFixed(0)}ms`;
+        }
+
+        function renderAnalysisPanel(data, lat, lon) {
+            document.getElementById('analysis-empty').style.display = 'none';
+            document.getElementById('analysis-content').style.display = 'block';
+            const a = data.analysis;
+            
+            const badge = document.getElementById('res-badge');
+            badge.className = `badge ${a.classification}`;
+            badge.innerText = a.classification.replace('_', ' ');
+            document.getElementById('res-coords').innerText = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+            document.getElementById('res-time').innerText = new Date().toLocaleTimeString();
+            document.getElementById('res-ndvi').innerText = a.ndvi_mean.toFixed(2);
+            
+            // Animation for arc
+            const arc = document.getElementById('ndvi-arc');
+            arc.style.strokeDashoffset = 125.6 * (1 - Math.max(0, Math.min(1, a.ndvi_mean)));
+            arc.style.stroke = a.ndvi_mean > 0.5 ? 'var(--healthy)' : (a.ndvi_mean > 0.3 ? 'var(--mild)' : 'var(--severe)');
+            
+            // Numerical animation for Score
+            animateScore(parseInt(document.getElementById('res-score').innerText) || 0, Math.round(a.stress_score));
+
+            // Indices
+            document.getElementById('val-ndwi').innerText = a.ndvi_mean.toFixed(2);
+            document.getElementById('bar-ndwi').style.width = `${a.ndvi_mean * 100}%`;
+
+            const issues = document.getElementById('res-issues');
+            issues.innerHTML = '';
+            a.detected_issues.forEach(iss => {
+                const el = document.createElement('div');
+                el.className = 'issue-pill';
+                el.innerText = iss.replace('_', ' ');
+                issues.appendChild(el);
+            });
+
+            document.getElementById('res-rec').innerText = a.recommendation;
+            document.getElementById('res-days').innerText = a.days_to_action === -1 ? '?' : a.days_to_action;
+            document.getElementById('res-conf').innerText = `${(a.confidence * 100).toFixed(1)}%`;
+
+            const setImg = (id, url) => {
+                const el = document.getElementById(id);
+                if (url) {
+                    el.style.backgroundImage = `url('${url.startsWith('http') ? url : API_URL + url}')`;
+                    el.style.display = 'block';
+                } else el.style.display = 'none';
+            };
+            setImg('thumb-sentinel', data.image_urls.sentinel_png);
+            setImg('thumb-mapbox', data.image_urls.mapbox_png);
+        }
+
+        function animateScore(start, end) {
+            const el = document.getElementById('res-score');
+            const duration = 800;
+            const startTime = performance.now();
+            function step(now) {
+                const progress = Math.min(1, (now - startTime) / duration);
+                el.innerText = Math.floor(progress * (end - start) + start);
+                if (progress < 1) requestAnimationFrame(step);
+            }
+            requestAnimationFrame(step);
+        }
+
+        function addMarkerToMap(item) {
+            const colors = { healthy: 'green', mild_stress: 'orange', severe_stress: 'red', uncertain: 'gray' };
+            const m = L.circleMarker([item.lat, item.lon], {
+                radius: 5 + (item.stress_score / 10),
+                fillColor: colors[item.classification] || 'gray',
+                color: '#fff', weight: 1, fillOpacity: 0.8
+            }).addTo(map);
+            m.on('click', () => renderAnalysisPanel({ analysis: item, image_urls: {} }, item.lat, item.lon));
+            markers.push(m);
+        }
+
+        function clearMarkers() {
+            markers.forEach(m => map.removeLayer(m));
+            markers = []; analysisHistory = [];
+            localStorage.removeItem("cropAlertHistory");
+            document.getElementById('analysis-content').style.display = 'none';
+            document.getElementById('analysis-empty').style.display = 'block';
+            updateCacheCount();
+            if (chartInstance) { chartInstance.data.labels = []; chartInstance.data.datasets[0].data = []; chartInstance.update(); }
+        }
+
+        function initChart() {
+            const ctx = document.getElementById('trendChart').getContext('2d');
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'NDVI', data: [], borderColor: '#18bc9c', tension: 0.2 }] },
+                options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 1 } } }
+            });
+        }
+
+        function updateTimeSeries(lat, lon) {
+            const nearby = analysisHistory.filter(h => Math.abs(h.lat - lat) < 0.1 && Math.abs(h.lon - lon) < 0.1)
+                .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+            chartInstance.data.labels = nearby.map(h => new Date(h.ts).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
+            chartInstance.data.datasets[0].data = nearby.map(h => h.ndvi_mean);
+            chartInstance.update();
+        }
+
+        let batchItems = [];
+        function addBatchRow() {
+            const lat = document.getElementById('batch-lat').value, lon = document.getElementById('batch-lon').value, name = document.getElementById('batch-name').value;
+            if (!lat || !lon || !name) return;
+            if (batchItems.length >= 20) return alert("Limit 20");
+            batchItems.push({ latitude: parseFloat(lat), longitude: parseFloat(lon), name });
+            renderBatchTable();
+        }
+        function renderBatchTable() {
+            const b = document.querySelector('#batch-table tbody');
+            b.innerHTML = batchItems.map((item, i) => `<tr><td>${item.name}</td><td>${item.latitude}</td><td>${item.longitude}</td><td id="b-res-${i}">Pending</td><td><button onclick="batchItems.splice(${i},1);renderBatchTable()">X</button></td></tr>`).join('');
+        }
+        async function runBatch() {
+            showLoader('batch-loader');
+            try {
+                const res = await fetch(`${API_URL}/batch_analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ parcels: batchItems }) });
+                const data = await res.json();
+                data.results.forEach((r, i) => document.getElementById(`b-res-${i}`).innerText = r.classification);
+                window.lastBatch = data.results;
+            } catch (e) { showError('batch-error', "Batch failed"); }
+            finally { hideLoader('batch-loader'); }
+        }
+        function exportBatchCSV() {
+            if (!window.lastBatch) return;
+            const csv = "Name,Lat,Lon,Class\n" + batchItems.map((it, i) => `${it.name},${it.latitude},${it.longitude},${window.lastBatch[i].classification}`).join("\n");
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+            link.download = "batch.csv"; link.click();
+        }
+
+        function switchTab(id) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById(`tab-${id}`).classList.add('active');
+            document.getElementById(`btn-tab-${id}`).classList.add('active');
+        }
+        function showLoader(id) { document.getElementById(id).classList.add('active'); }
+        function hideLoader(id) { document.getElementById(id).classList.remove('active'); }
+        function showError(id, msg) { const el = document.getElementById(id); el.innerText = msg; el.style.display = 'block'; }
+        function hideError(id) { document.getElementById(id).style.display = 'none'; }
+        function openModal(bg) { document.getElementById('modal-img').src = bg.slice(5, -2); document.getElementById('image-modal').classList.add('active'); }
+        function closeModal() { document.getElementById('image-modal').classList.remove('active'); }
+        function updateCacheCount() { document.getElementById('stat-cache').innerText = `Cache: ${analysisHistory.length} items`; }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
