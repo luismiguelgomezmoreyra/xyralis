@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
 import numpy as np
-import pandas as pd
 
 logger = logging.getLogger("cropalert.build_dataset")
 
@@ -140,35 +139,14 @@ def build_prompt(indices: Dict[str, float], stress_class: str, reasoning: str) -
 def load_all_samples(base_dir: str = "data/raw") -> List[Dict]:
     """
     Load samples from:
-      - EuroSAT: metadata.csv → {image_path, class, split}
-      - BigEarthNet: scan .npy + .json sidecars
+      - BigEarthNet: .npy + .json sidecars
       - SimSat demo: manifest.json
-    Returns list of dicts with image_path, indices (computed if missing), raw_label, split.
+    Returns list of dicts with image_path, indices, raw_label, split.
     """
     samples: List[Dict] = []
     base = Path(base_dir)
 
-    # 1. EuroSAT
-    eurosat_meta = base / "eurosat" / "metadata.csv"
-    if eurosat_meta.exists():
-        df = pd.read_csv(eurosat_meta)
-        for _, row in df.iterrows():
-            sample = {
-                "image_path": str(row["path"]),
-                "raw_label": row["class"],
-                "split": row["split"],
-                "source": "eurosat",
-            }
-            # Try to find precomputed indices JSON
-            idx_json = Path(row["path"]).with_suffix(".indices.json")
-            if idx_json.exists():
-                with open(idx_json) as f:
-                    sample["indices"] = json.load(f)
-            else:
-                sample["indices"] = None  # compute later
-            samples.append(sample)
-
-    # 2. BigEarthNet
+    # 1. BigEarthNet
     bigearth_dir = base / "bigearth"
     if bigearth_dir.exists():
         for npy_file in bigearth_dir.glob("*.npy"):
@@ -185,7 +163,7 @@ def load_all_samples(base_dir: str = "data/raw") -> List[Dict]:
                 }
                 samples.append(sample)
 
-    # 3. SimSat demo
+    # 2. SimSat demo
     simsat_manifest = base / "simsat_demo" / "manifest.json"
     if simsat_manifest.exists():
         with open(simsat_manifest) as f:

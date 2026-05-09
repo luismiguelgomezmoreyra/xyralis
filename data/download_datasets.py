@@ -1,6 +1,6 @@
 """
 Dataset download and organization for CropAlert.
-Downloads and structures training data from multiple sources: EuroSAT, BigEarthNet, SimSat demo.
+Downloads and structures training data from Sentinel-2 sources: BigEarthNet, SimSat demo.
 """
 
 import argparse
@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import numpy as np
-import pandas as pd
 from dataclasses import dataclass, asdict
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -29,78 +28,6 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("cropalert.download")
-
-
-# ── EuroSAT ────────────────────────────────────────────────────────────────────
-def download_eurosat(output_dir: str = "data/raw/eurosat") -> int:
-    """
-    Download EuroSAT multispectral dataset via torchvision.
-    Filter to agricultural classes only: AnnualCrop, PermanentCrop, HerbaceousVegetation, Pasture.
-    Balance: max 400 images per class.
-    Save metadata CSV: output_dir/metadata.csv with columns: path, class, split (70/15/15).
-    """
-    try:
-        from torchvision.datasets import EuroSAT
-    except ImportError:
-        logger.error("torchvision not installed. Run: pip install torchvision")
-        return 0
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    AGRICULTURAL_CLASSES = {"AnnualCrop", "PermanentCrop", "HerbaceousVegetation", "Pasture"}
-    MAX_PER_CLASS = 400
-
-    logger.info("Downloading EuroSAT dataset …")
-    dataset = EuroSAT(root=output_dir, download=True, transform=None)
-
-    # Collect per-class samples
-    samples_by_class: Dict[str, List[Dict]] = {cls: [] for cls in AGRICULTURAL_CLASSES}
-
-    for idx, (img, label_idx) in enumerate(dataset):
-        class_name = dataset.classes[label_idx]
-        if class_name in AGRICULTURAL_CLASSES:
-            # Determine filename
-            filename = f"{class_name}_{idx:05d}.npy"
-            # Save as numpy (PIL → array)
-            img_array = np.array(img)  # shape [H,W,C] or [C,H,W] depending on EuroSAT version
-            np.save(output_path / filename, img_array)
-
-            samples_by_class[class_name].append({
-                "path": str(output_path / filename),
-                "class": class_name,
-            })
-
-    # Balance: truncate to MAX_PER_CLASS
-    balanced: List[Dict] = []
-    for cls, samples in samples_by_class.items():
-        truncated = samples[:MAX_PER_CLASS]
-        logger.info("  Class %s: %d samples (truncated to %d)", cls, len(samples), len(truncated))
-        balanced.extend(truncated)
-
-    # Shuffle and split 70/15/15
-    np.random.seed(42)
-    np.random.shuffle(balanced)
-
-    n_total = len(balanced)
-    n_train = int(0.70 * n_total)
-    n_val = int(0.15 * n_total)
-
-    for i, sample in enumerate(balanced):
-        if i < n_train:
-            sample["split"] = "train"
-        elif i < n_train + n_val:
-            sample["split"] = "val"
-        else:
-            sample["split"] = "test"
-
-    # Save metadata CSV
-    df = pd.DataFrame(balanced)
-    csv_path = output_path / "metadata.csv"
-    df.to_csv(csv_path, index=False)
-
-    logger.info("Downloaded %d images across %d classes (CSV: %s)", n_total, len(samples_by_class), csv_path)
-    return n_total
 
 
 # ── BigEarthNet sample ─────────────────────────────────────────────────────────
@@ -294,8 +221,8 @@ def download_simsat_demo_parcels(output_dir: str = "data/raw/simsat_demo") -> in
 
 # ── Main CLI ───────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Download datasets for CropAlert")
-    parser.add_argument("--source", choices=["eurosat", "bigearth", "simsat", "all"], default="all",
+    parser = argparse.ArgumentParser(description="Download Sentinel-2 datasets for CropAlert")
+    parser.add_argument("--source", choices=["bigearth", "simsat", "all"], default="all",
                         help="Dataset source to download")
     parser.add_argument("--output-dir", default="data/raw", help="Base output directory")
     args = parser.parse_args()
@@ -306,18 +233,13 @@ def main():
 
     total = 0
 
-    if args.source in ("eurosat", "all"):
-        logger.info("\n--- EuroSAT ---")
-        n = download_eurosat(os.path.join(args.output_dir, "eurosat"))
-        total += n
-
     if args.source in ("bigearth", "all"):
-        logger.info("\n--- BigEarthNet ---")
+        logger.info("\n--- BigEarthNet (Sentinel-2) ---")
         n = download_bigearth_sample(os.path.join(args.output_dir, "bigearth"), n_samples=300)
         total += n
 
     if args.source in ("simsat", "all"):
-        logger.info("\n--- SimSat Demo ---")
+        logger.info("\n--- SimSat Demo (Sentinel-2 simulation) ---")
         n = download_simsat_demo_parcels(os.path.join(args.output_dir, "simsat_demo"))
         total += n
 
