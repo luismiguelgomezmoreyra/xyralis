@@ -177,10 +177,14 @@ class SimSatClient:
                 result.bands_array = np.array(bands_list, dtype=np.float32)
 
                 # Compute indices + false-color composite
-                result.indices = compute_spectral_indices(result.bands_array)
+                ts = int(time.time())
+                result.indices = compute_spectral_indices(
+                    result.bands_array,
+                    output_colormap_path=self._demo_path(f"ndvi_colormap_{ts}.png")
+                )
                 result.false_color_png_path = make_false_color_composite(
                     result.bands_array,
-                    output_path=self._demo_path(f"sentinel_{int(time.time())}.png"),
+                    output_path=self._demo_path(f"sentinel_fc_{ts}.png"),
                 )
                 return result
 
@@ -375,11 +379,14 @@ class SimSatClient:
 
 
 # ── Index computation ─────────────────────────────────────────────────────────
-def compute_spectral_indices(bands_array: np.ndarray) -> Dict[str, float]:
+def compute_spectral_indices(bands_array: np.ndarray, output_colormap_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Compute NDVI, NDWI, SWIR_ratio, EVI + statistics.
     bands_array: [6, H, W] in order [red, green, blue, nir, swir16, swir22]
     All bands normalized 0-1 float32.
+
+    Returns dict with _mean, _std, _min, _max for each index, stress_score,
+    and optionally ndvi_colormap_path if output_colormap_path is provided.
     """
     if bands_array.ndim != 3 or bands_array.shape[0] != 6:
         raise SimSatBandError(f"Expected shape [6,H,W], got {bands_array.shape}")
@@ -422,13 +429,29 @@ def compute_spectral_indices(bands_array: np.ndarray) -> Dict[str, float]:
     veget_stress = 100 * (1.0 - float(np.clip(ndvi_stats["mean"], 0, 1)))
     stress_score = 0.6 * veget_stress + 0.4 * water_stress
 
-    return {
+    result = {
         **{f"ndvi_{k}": v for k, v in ndvi_stats.items()},
         **{f"ndwi_{k}": v for k, v in ndwi_stats.items()},
         **{f"swir_ratio_{k}": v for k, v in swir_stats.items()},
         **{f"evi_{k}": v for k, v in evi_stats.items()},
         "stress_score": float(np.clip(stress_score, 0, 100)),
     }
+
+    # Optional NDVI colormap
+    if output_colormap_path:
+        try:
+            import matplotlib.pyplot as plt
+            cmap = plt.get_cmap("viridis")
+            ndvi_rgba = cmap(np.clip(ndvi, -1, 1))  # [H,W,4] in 0-1
+            ndvi_rgb = (ndvi_rgba[..., :3] * 255).astype(np.uint8)
+            img = Image.fromarray(ndvi_rgb)
+            Path(output_colormap_path).parent.mkdir(parents=True, exist_ok=True)
+            img.save(output_colormap_path)
+            result["ndvi_colormap_path"] = output_colormap_path
+        except Exception as e:
+            logger.warning("Failed to generate NDVI colormap: %s", e)
+
+    return result
 
 
 # ── False-colour composite ────────────────────────────────────────────────────
@@ -514,6 +537,8 @@ if __name__ == "__main__":
             print(f"  Bands shape : {sent.bands_array.shape}")
             print(f"  Indices     : NDVI={sent.indices.get('ndvi_mean', 'n/a'):.3f}")
             print(f"  False-color : {sent.false_color_png_path}")
+            if 'ndvi_colormap_path' in sent.indices:
+                print(f"  NDVI map    : {sent.indices['ndvi_colormap_path']}")
             summary["fetch_current_sentinel"] = "OK"
         else:
             print("  Image not available (clouds / no coverage)")
@@ -579,7 +604,10 @@ if __name__ == "__main__":
         all_views = client.fetch_all_views(lat=-12.0, lon=-75.2, timestamp_iso="2026-03-01T12:00:00Z")
         print(f"  Errors      : {len(all_views.errors)}")
         print(f"  Best image  : {all_views.best_image_path}")
-        print(f"  NDVI mean   : {all_views.indices.get('ndvi_mean', 'n/a'):.3f}")
+        if all_views.indices:
+            print(f"  NDVI mean   : {all_views.indices.get('ndvi_mean', 'n/a'):.3f}")
+            if 'ndvi_colormap_path' in all_views.indices:
+                print(f"  NDVI map    : {all_views.indices['ndvi_colormap_path']}")
         summary["fetch_all_views"] = "OK"
 
     except Exception as e:
