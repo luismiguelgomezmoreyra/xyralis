@@ -1,5 +1,5 @@
 """
-Dataset integrity validation for CropAlert.
+Dataset integrity validation for Xyralis.
 Checks image paths, class balance, cross-split leakage, response format, and NDVI ordering.
 """
 
@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Set
 
 import numpy as np
 
-logger = logging.getLogger("cropalert.validate")
+logger = logging.getLogger("xyralis.validate")
 
 # ── Helper ─────────────────────────────────────────────────────────────────────
 def load_jsonl(path: Path) -> List[Dict]:
@@ -176,7 +176,7 @@ def validate_dataset_integrity(dataset_dir: str = "data/dataset") -> bool:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Validate CropAlert dataset integrity")
+    parser = argparse.ArgumentParser(description="Validate Xyralis dataset integrity")
     parser.add_argument("--dataset-dir", default="data/dataset", help="Dataset directory")
     args = parser.parse_args()
 

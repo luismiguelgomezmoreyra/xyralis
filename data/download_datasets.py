@@ -1,5 +1,5 @@
 """
-Dataset download and organization for CropAlert.
+Dataset download and organization for Xyralis.
 Downloads and structures training data from Sentinel-2 sources: BigEarthNet, SimSat demo.
 """
 
@@ -27,7 +27,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-logger = logging.getLogger("cropalert.download")
+logger = logging.getLogger("xyralis.download")
 
 
 # ── BigEarthNet sample ─────────────────────────────────────────────────────────
@@ -221,13 +221,13 @@ def download_simsat_demo_parcels(output_dir: str = "data/raw/simsat_demo") -> in
 
 # ── Main CLI ───────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Download Sentinel-2 datasets for CropAlert")
+    parser = argparse.ArgumentParser(description="Download Sentinel-2 datasets for Xyralis")
     parser.add_argument("--source", choices=["bigearth", "simsat", "all"], default="all",
                         help="Dataset source to download")
     parser.add_argument("--output-dir", default="data/raw", help="Base output directory")
     args = parser.parse_args()
 
-    logger.info("=== CropAlert Dataset Downloader ===")
+    logger.info("=== Xyralis Dataset Downloader ===")
     logger.info("Source: %s", args.source)
     logger.info("Output : %s", args.output_dir)
 

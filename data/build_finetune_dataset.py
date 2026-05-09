@@ -1,5 +1,5 @@
 """
-Build finetuning dataset for LFM2-VL model.
+Build finetuning dataset for Xyralis LFM2-VL model.
 Loads samples from multiple sources, computes spectral indices, generates prompts.
 """
 
@@ -14,7 +14,7 @@ from typing import List, Dict, Any, Tuple, Optional
 
 import numpy as np
 
-logger = logging.getLogger("cropalert.build_dataset")
+logger = logging.getLogger("xyralis.build_dataset")
 
 # ── Stress classification rules ────────────────────────────────────────────────
 def label_to_stress_class(raw_label: str, indices: Dict[str, float]) -> Tuple[str, int, str]:
@@ -360,13 +360,13 @@ def save_dataset(
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Build finetuning dataset for CropAlert")
+    parser = argparse.ArgumentParser(description="Build finetuning dataset for Xyralis")
     parser.add_argument("--raw-dir", default="data/raw", help="Raw data directory")
     parser.add_argument("--output-dir", default="data/dataset", help="Output dataset directory")
     parser.add_argument("--variants", type=int, default=3, help="Number of prompt variants per sample")
     args = parser.parse_args()
 
-    logger.info("=== Building CropAlert Finetune Dataset ===")
+    logger.info("=== Building Xyralis Finetune Dataset ===")
     logger.info("Raw dir: %s", args.raw_dir)
     logger.info("Output : %s", args.output_dir)
 

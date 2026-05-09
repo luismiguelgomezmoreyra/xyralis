@@ -1,5 +1,5 @@
 """
-SimSat API Client for CropAlert — production-quality module.
+SimSat API Client for Xyralis — production-quality module.
 Handles satellite image retrieval, spectral index computation, and demo caching.
 """
 
@@ -20,7 +20,7 @@ from typing import Optional, Tuple, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ── Logging ──────────────────────────────────────────────────────────────────
-logger = logging.getLogger("cropalert.simsat")
+logger = logging.getLogger("xyralis.simsat")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     _h = logging.StreamHandler()
@@ -503,7 +503,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     print("=" * 60)
-    print("CropAlert — SimSat Client Test Suite")
+    print("Xyralis — SimSat Client Test Suite")
     print("=" * 60)
 
     client = SimSatClient()
