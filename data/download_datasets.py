@@ -1,6 +1,6 @@
 """
 Dataset download and organization for Xyralis.
-Downloads and structures training data from Sentinel-2 sources: BigEarthNet, SimSat demo.
+Downloads Sentinel-2 training data: BigEarthNet (real) + SimSat demo (simulated).
 """
 
 import argparse
@@ -8,13 +8,11 @@ import json
 import logging
 import os
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import numpy as np
-from dataclasses import dataclass, asdict
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 LOG_DIR = Path("logs")
@@ -36,6 +34,7 @@ def download_bigearth_sample(output_dir: str = "data/raw/bigearth", n_samples: i
     Load BigEarthNet via streaming (torchgeo) and download first n_samples
     with agricultural labels: Arable land, Pastures, Permanent crops.
     Save each sample as .npy (12 bands) + .json sidecar.
+    Uses streaming=True to avoid downloading full 120GB dataset.
     """
     try:
         from datasets import load_dataset
@@ -48,60 +47,70 @@ def download_bigearth_sample(output_dir: str = "data/raw/bigearth", n_samples: i
 
     AGRIC_LABELS = {"Arable land", "Pastures", "Permanent crops"}
 
-    logger.info("Loading BigEarthNet (streaming)…")
-    ds = load_dataset("torchgeo/BigEarthNet", split="train", streaming=True)
+    logger.info("Loading BigEarthNet (streaming mode, full dataset is 120GB)…")
+    try:
+        ds = load_dataset("torchgeo/BigEarthNet", split="train", streaming=True)
+    except Exception as e:
+        logger.error("Failed to load BigEarthNet dataset: %s", e)
+        return 0
 
     count = 0
     saved: List[Dict] = []
 
     logger.info("Downloading up to %d agricultural samples …", n_samples)
-    for idx, example in enumerate(ds):
-        if count >= n_samples:
-            break
+    try:
+        for idx, example in enumerate(ds):
+            if count >= n_samples:
+                break
 
-        # Check labels
-        labels = example.get("labels", [])
-        if not any(lbl in AGRIC_LABELS for lbl in labels):
-            continue  # skip non-agricultural
+            # Check labels
+            labels = example.get("labels", [])
+            if not any(lbl in AGRIC_LABELS for lbl in labels):
+                continue  # skip non-agricultural
 
-        # Extract bands (12 bands as separate arrays in example)
-        # BigEarthNet provides: B01, B02, ..., B12, B8A
-        band_keys = [f"B{i:02d}" for i in range(1, 13)] + ["B8A"]
-        band_arrays = []
-        for key in band_keys:
-            if key in example:
-                arr = np.array(example[key])
-                band_arrays.append(arr)
-            else:
-                logger.warning("Band %s missing in sample %d", key, idx)
+            # Extract bands (BigEarthNet provides B01..B12 + B8A)
+            band_keys = [f"B{i:02d}" for i in range(1, 13)] + ["B8A"]
+            band_arrays = []
+            for key in band_keys:
+                if key in example:
+                    arr = np.array(example[key])
+                    band_arrays.append(arr)
+                else:
+                    logger.warning("Band %s missing in sample %d", key, idx)
+                    break
 
-        if len(band_arrays) != 13:
-            logger.warning("Skipping sample %d: incomplete bands", idx)
-            continue
+            if len(band_arrays) != 13:
+                logger.warning("Skipping sample %d: incomplete bands (%d)", idx, len(band_arrays))
+                continue
 
-        bands_stack = np.stack(band_arrays, axis=0).astype(np.float32)  # [13, H, W]
+            bands_stack = np.stack(band_arrays, axis=0).astype(np.float32)  # [13, H, W]
 
-        # Save .npy
-        sample_id = example.get("patch_id", f"bigearth_{idx:06d}")
-        npy_path = output_path / f"{sample_id}.npy"
-        np.save(npy_path, bands_stack)
+            # Save .npy
+            sample_id = example.get("patch_id", f"bigearth_{idx:06d}")
+            npy_path = output_path / f"{sample_id}.npy"
+            np.save(npy_path, bands_stack)
 
-        # Save JSON sidecar
-        meta = {
-            "patch_id": sample_id,
-            "labels": labels,
-            "source": "BigEarthNet",
-            "timestamp_iso": "2026-01-01T00:00:00Z",  # dummy for consistency
-        }
-        json_path = output_path / f"{sample_id}.json"
-        with open(json_path, "w") as f:
-            json.dump(meta, f, indent=2)
+            # Save JSON sidecar
+            meta = {
+                "patch_id": sample_id,
+                "labels": labels,
+                "source": "BigEarthNet",
+                "timestamp_iso": "2026-01-01T00:00:00Z",  # dummy for consistency
+            }
+            json_path = output_path / f"{sample_id}.json"
+            with open(json_path, "w") as f:
+                json.dump(meta, f, indent=2)
 
-        saved.append({"path": str(npy_path), "json": str(json_path), "labels": labels})
-        count += 1
+            saved.append({"path": str(npy_path), "json": str(json_path), "labels": labels})
+            count += 1
 
-        if count % 50 == 0:
-            logger.info("  Downloaded %d/%d …", count, n_samples)
+            if count % 50 == 0:
+                logger.info("  Downloaded %d/%d …", count, n_samples)
+
+    except Exception as e:
+        logger.error("Error during BigEarthNet download: %s", e)
+        # Return what we managed to save so far
+        return count
 
     logger.info("BigEarthNet: saved %d samples to %s", count, output_dir)
     return count
@@ -150,9 +159,9 @@ def download_simsat_demo_parcels(output_dir: str = "data/raw/simsat_demo") -> in
       - raw bands .npy (6 bands: R,G,B,NIR,SWIR16,SWIR22)
       - indices .json
     Creates manifest.json in output_dir.
+    Handles image_available=False gracefully by skipping.
     """
     try:
-        # Import SimSatClient from project
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from api.simsat_client import SimSatClient
     except ImportError as e:
@@ -193,7 +202,6 @@ def download_simsat_demo_parcels(output_dir: str = "data/raw/simsat_demo") -> in
             # Save false-color PNG
             if result.false_color_png_path and Path(result.false_color_png_path).exists():
                 png_path = output_path / f"{name}_falsecolor.png"
-                # Move from temp location to output
                 import shutil
                 shutil.copy(result.false_color_png_path, png_path)
                 manifest.append({"name": name, "type": "false_color", "path": str(png_path)})

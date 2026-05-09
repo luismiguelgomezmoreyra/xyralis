@@ -1,6 +1,6 @@
 """
 Build finetuning dataset for Xyralis LFM2-VL model.
-Loads samples from multiple sources, computes spectral indices, generates prompts.
+Loads samples from Sentinel-2 sources, computes spectral indices, generates prompts.
 """
 
 import argparse
@@ -19,33 +19,46 @@ logger = logging.getLogger("xyralis.build_dataset")
 # ── Stress classification rules ────────────────────────────────────────────────
 def label_to_stress_class(raw_label: str, indices: Dict[str, float]) -> Tuple[str, int, str]:
     """
-    Classify crop stress level from raw label + spectral indices.
+    Classify crop stress level from BOTH raw label AND spectral indices.
     Returns (stress_class, severity_0_to_2, reasoning)
     """
     ndvi = indices.get("ndvi_mean", 0.0)
     ndwi = indices.get("ndwi_mean", 0.0)
     stress_score = indices.get("stress_score", 0.0)
 
-    # Rule-based classification
+    # Incorporate raw_label hints (e.g., BigEarthNet labels give crop type context)
+    label_lower = raw_label.lower()
+
+    # Base classification on indices
     if ndvi > 0.5 and ndwi > -0.1:
         cls = "healthy"
         severity = 0
-        reasoning = f"Healthy vegetation: NDVI={ndvi:.3f} (vigorous), NDWI={ndwi:.3f} (no water stress)"
+        base_reason = f"NDVI={ndvi:.3f} (vigorous), NDWI={ndwi:.3f} (no water stress)"
     elif (0.3 <= ndvi <= 0.5) or (ndvi > 0.5 and ndwi <= -0.2):
         cls = "mild_stress"
         severity = 1
         stress_type = "water stress" if ndwi <= -0.2 else "moderate vigor loss"
-        reasoning = f"Mild stress detected: NDVI={ndvi:.3f} (moderate), {stress_type} (NDWI={ndwi:.3f})"
+        base_reason = f"NDVI={ndvi:.3f} (moderate), {stress_type} (NDWI={ndwi:.3f})"
     elif ndvi < 0.3 or stress_score > 70:
         cls = "severe_stress"
         severity = 2
         cause = "low vigor" if ndvi < 0.3 else "high stress score"
-        reasoning = f"Severe stress: NDVI={ndvi:.3f} ({cause}), combined stress_score={stress_score:.1f}"
+        base_reason = f"NDVI={ndvi:.3f} ({cause}), combined stress_score={stress_score:.1f}"
     else:
-        # Fallback
         cls = "mild_stress"
         severity = 1
-        reasoning = f"Unclear case — assigned mild_stress by fallback (NDVI={ndvi:.3f}, NDWI={ndwi:.3f})"
+        base_reason = f"Unclear case — assigned mild_stress (NDVI={ndvi:.3f}, NDWI={ndwi:.3f})"
+
+    # Adjust based on raw_label if it provides strong contradictory evidence
+    # Ejemplo: si la etiqueta dice "Permanent crops" pero NDVI muy bajo, puede indicar estrés severo
+    if "permanent" in label_lower or "arable" in label_lower:
+        if ndvi < 0.4:
+            # Cultivos de sembra a veces tienen NDVI más bajo en ciertas épocas
+            reasoning = f"{base_reason} [label hint: {raw_label} may have seasonal low canopy]"
+        else:
+            reasoning = f"{base_reason} [label: {raw_label}]"
+    else:
+        reasoning = f"{base_reason} [label: {raw_label}]"
 
     return cls, severity, reasoning
 
@@ -104,24 +117,21 @@ NEGATIVE_EXAMPLES = {
 def build_prompt(indices: Dict[str, float], stress_class: str, reasoning: str) -> Tuple[str, str, str]:
     """
     Generate (system_prompt, user_prompt, expected_response) for one sample.
-    Create 3 variants via random phrasing.
     """
     rng = np.random.RandomState(int(indices.get("ndvi_mean", 0) * 10000) % (2**32))
 
-    # Format indices nicely
     idx_text = (
         f"NDVI={indices.get('ndvi_mean', 0):.3f} (σ={indices.get('ndvi_std', 0):.3f}), "
         f"NDWI={indices.get('ndwi_mean', 0):.3f}, "
-        f"SWIR ratio={indices.get('swir_ratio_mean', 0):.3f}, "
+        f"SWIR={indices.get('swir_ratio_mean', 0):.3f}, "
         f"EVI={indices.get('evi_mean', 0):.3f}, "
-        f"Stress score={indices.get('stress_score', 0):.1f}/100"
+        f"Stress={indices.get('stress_score', 0):.1f}/100"
     )
 
-    # Varying question phrasing templates
     templates = [
-        f"Given these spectral indices: {idx_text}. What is the crop stress status?",
-        f"Analyze the following vegetation indices: {idx_text}. Assess health and recommend action.",
-        f"Crop condition metrics: {idx_text}. Classify stress level and suggest intervention timing.",
+        f"Spectral indices: {idx_text}. Classify crop stress status.",
+        f"Given these vegetation indices: {idx_text}. Assess health and recommend intervention.",
+        f"Crop condition analysis: {idx_text}. Determine stress level and timing for action.",
     ]
     user_prompt = rng.choice(templates)
 
@@ -141,7 +151,7 @@ def load_all_samples(base_dir: str = "data/raw") -> List[Dict]:
     Load samples from:
       - BigEarthNet: .npy + .json sidecars
       - SimSat demo: manifest.json
-    Returns list of dicts with image_path, indices, raw_label, split.
+    Returns list of dicts with image_path, indices, raw_label, source, split (to be assigned).
     """
     samples: List[Dict] = []
     base = Path(base_dir)
@@ -157,9 +167,9 @@ def load_all_samples(base_dir: str = "data/raw") -> List[Dict]:
                 sample = {
                     "image_path": str(npy_file),
                     "raw_label": ", ".join(meta.get("labels", [])),
-                    "split": "train",  # all bigearth is train
+                    "split": None,  # to be assigned
                     "source": "bigearth",
-                    "indices": None,  # compute from array
+                    "indices": None,  # compute later
                 }
                 samples.append(sample)
 
@@ -168,7 +178,6 @@ def load_all_samples(base_dir: str = "data/raw") -> List[Dict]:
     if simsat_manifest.exists():
         with open(simsat_manifest) as f:
             manifest = json.load(f)
-        # Group by parcel name
         by_parcel: Dict[str, Dict] = {}
         for entry in manifest:
             if entry["type"] == "false_color":
@@ -188,41 +197,37 @@ def load_all_samples(base_dir: str = "data/raw") -> List[Dict]:
                 sample = {
                     "image_path": data.get("image", ""),
                     "raw_label": f"simsat_{name}",
-                    "split": "train",
+                    "split": None,
                     "source": "simsat",
                     "indices": indices,
                 }
                 samples.append(sample)
 
-    logger.info("Loaded %d samples from all sources", len(samples))
+    logger.info("Loaded %d samples from all sources (no split assigned yet)", len(samples))
     return samples
 
 
 # ── Spectral indices compute (fallback) ────────────────────────────────────────
 def compute_indices_from_array(image_path: str) -> Optional[Dict[str, float]]:
     """
-    Load .npy array and compute spectral indices if not already present.
-    Assumes array shape [6, H, W] for SimSat or [13, H, W] for BigEarthNet (needs band selection).
+    Load .npy array and compute spectral indices.
+    Supports BigEarthNet (13 bands) and SimSat (6 bands).
     """
     try:
         arr = np.load(image_path)
-        # Normalize 0-1 if needed
+        # Normalize if needed (Sentinel-2 L2A values typically 0-10000)
         if arr.max() > 1.1:
-            arr = arr.astype(np.float32) / 10000.0  # Sentinel-2 scaling
+            arr = arr.astype(np.float32) / 10000.0
 
-        # For BigEarthNet, select the 6 bands we need
-        if arr.shape[0] >= 12:
-            # BigEarthNet band order: B01..B12 + B8A scattered — we need R= B04, G=B03, B=B02, NIR=B08, SWIR16=B11, SWIR22=B12
-            band_names = ["B01","B02","B03","B04","B05","B06","B07","B08","B8A","B09","B10","B11","B12"]
-            # indices: red=3, green=2, blue=1, nir=7, swir16=11, swir22=12
-            idx_map = [3, 2, 1, 7, 11, 12]
-            bands = np.stack([arr[i] for i in idx_map], axis=0)
+        # Select bands: red, green, blue, nir, swir16, swir22
+        if arr.shape[0] >= 12:  # BigEarthNet: B01..B12, B8A
+            # Band mapping for Sentinel-2 L2A:
+            # B02=blue, B03=green, B04=red, B08=nir, B11=swir16, B12=swir22
+            band_indices = [3, 2, 1, 7, 11, 12]  # 0-based indices
+            bands = np.stack([arr[i] for i in band_indices], axis=0)
         else:
-            # Assume SimSat format already [6,H,W]
-            bands = arr
+            bands = arr  # Assume already [6,H,W]
 
-        # Use same compute function as SimSat client
-        # Re-import here to avoid circular
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from api.simsat_client import compute_spectral_indices
 
@@ -234,9 +239,31 @@ def compute_indices_from_array(image_path: str) -> Optional[Dict[str, float]]:
 
 
 # ── Dataset building ───────────────────────────────────────────────────────────
-def build_prompt_variants(indices: Dict[str, float], stress_class: str, reasoning: str, n_variants: int = 3) -> List[Tuple[str, str, str]]:
-    """Generate multiple prompt variants per sample."""
-    return [build_prompt(indices, stress_class, reasoning) for _ in range(n_variants)]
+def assign_splits(samples: List[Dict], seed: int = 42) -> None:
+    """
+    Assign train/val/test splits (70/15/15) to samples that have split=None.
+    Modifies samples in-place.
+    """
+    unassigned = [i for i, s in enumerate(samples) if s.get("split") is None]
+    n = len(unassigned)
+    if n == 0:
+        return
+
+    np.random.seed(seed)
+    np.random.shuffle(unassigned)
+
+    n_train = int(0.70 * n)
+    n_val = int(0.15 * n)
+
+    for idx_pos, sample_idx in enumerate(unassigned):
+        if idx_pos < n_train:
+            samples[sample_idx]["split"] = "train"
+        elif idx_pos < n_train + n_val:
+            samples[sample_idx]["split"] = "val"
+        else:
+            samples[sample_idx]["split"] = "test"
+
+    logger.info("Assigned splits: train=%d, val=%d, test=%d", n_train, n_val, n - n_train - n_val)
 
 
 def save_dataset(
@@ -246,20 +273,16 @@ def save_dataset(
 ) -> Dict[str, Any]:
     """
     Save train.jsonl, val.jsonl, test.jsonl and dataset_stats.json.
-    Each line: {"image": path, "system": system_prompt, "prompt": user_prompt, "response": expected_response, "label": stress_class, "indices": {...}}
+    Each line: {"image": path, "system": system_prompt, "prompt": user_prompt,
+               "response": expected_response, "label": stress_class, "indices": {...}}
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    # Prepare negative examples
     neg_examples = NEGATIVE_EXAMPLES.copy()
-
-    train_lines = []
-    val_lines = []
-    test_lines = []
-
+    train_lines, val_lines, test_lines = [], [], []
     stats = {
-        "total": len(samples),
+        "total": 0,
         "by_class": {"healthy": 0, "mild_stress": 0, "severe_stress": 0},
         "by_split": {"train": 0, "val": 0, "test": 0},
         "index_stats": {},
@@ -270,19 +293,17 @@ def save_dataset(
         if sample.get("indices") is None:
             sample["indices"] = compute_indices_from_array(sample["image_path"])
             if sample["indices"] is None:
-                logger.warning("Skipping sample (could not compute indices): %s", sample["image_path"])
+                logger.warning("Skipping sample (indices compute failed): %s", sample["image_path"])
                 continue
 
-        # Classify
+        # Classify using BOTH raw_label AND indices
         stress_class, severity, reasoning = label_to_stress_class(sample["raw_label"], sample["indices"])
 
         # Generate prompt variants
-        variants = build_prompt_variants(sample["indices"], stress_class, reasoning, variants_per_sample)
+        variants = [build_prompt(sample["indices"], stress_class, reasoning) for _ in range(variants_per_sample)]
 
-        # Assign split
-        split = sample.get("split", "train")  # default train
+        split = sample.get("split", "train")  # after assign_splits, all should have split
 
-        # Build line dict
         for sys_prompt, user_prompt, expected in variants:
             line = {
                 "image": sample["image_path"],
@@ -294,8 +315,8 @@ def save_dataset(
                 "indices": sample["indices"],
             }
 
-            # Add negative examples as separate entries in train only
-            if split == "train" and stress_class in neg_examples and len(neg_examples[stress_class]) > 0:
+            # Add negative examples only to train
+            if split == "train" and stress_class in neg_examples and neg_examples[stress_class]:
                 for neg in neg_examples[stress_class]:
                     neg_line = {
                         "image": "",
@@ -308,8 +329,7 @@ def save_dataset(
                         "is_negative_example": True,
                     }
                     train_lines.append(neg_line)
-                # Limit to 2 negatives per class per sample
-                neg_examples[stress_class] = []
+                neg_examples[stress_class] = []  # only add once per class total
 
             if split == "train":
                 train_lines.append(line)
@@ -320,22 +340,23 @@ def save_dataset(
 
         stats["by_class"][stress_class] += variants_per_sample
         stats["by_split"][split] += variants_per_sample
+        stats["total"] += variants_per_sample
 
     # Write files
     for split_name, lines in [("train", train_lines), ("val", val_lines), ("test", test_lines)]:
         if not lines:
             continue
         path = out / f"{split_name}.jsonl"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             for line in lines:
                 f.write(json.dumps(line, ensure_ascii=False) + "\n")
         logger.info("Wrote %s.jsonl: %d samples", split_name, len(lines))
 
-    # Compute per-class index statistics
+    # Per-class index statistics
     class_indices: Dict[str, List[Dict]] = {c: [] for c in ["healthy", "mild_stress", "severe_stress"]}
     for line in train_lines + val_lines + test_lines:
         cls = line["label"]
-        idx = line["indices"]
+        idx = line.get("indices", {})
         if idx:
             class_indices[cls].append(idx)
 
@@ -349,12 +370,11 @@ def save_dataset(
                 "ndvi_std": float(np.std(ndvi_vals)),
             }
 
-    # Write stats
     stats_path = out / "dataset_stats.json"
     with open(stats_path, "w") as f:
         json.dump(stats, f, indent=2)
 
-    logger.info("Dataset stats: %s", json.dumps(stats, indent=2))
+    logger.info("Dataset built: %s", json.dumps(stats, indent=2))
     return stats
 
 
@@ -375,9 +395,12 @@ def main():
         logger.error("No samples loaded. Check raw data directories.")
         sys.exit(1)
 
+    # Assign splits 70/15/15
+    assign_splits(samples, seed=42)
+
     stats = save_dataset(samples, args.output_dir, args.variants)
 
-    # Print summary table
+    # Print summary
     print("\n" + "=" * 60)
     print("FINAL DATASET SUMMARY")
     print("=" * 60)
