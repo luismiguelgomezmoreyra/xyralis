@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.inference import CropAlertInference, AnalysisResult
+from api.inference import XyralisInference, AnalysisResult
 from api.schemas import (
     AnalyzeRequest, AnalyzeResponse, BatchAnalyzeRequest, BatchAnalyzeResponse,
     HealthResponse, SimulationStatus, SimulationControl, MetricsResponse,
@@ -38,7 +38,7 @@ logger = logging.getLogger("xyralis.api")
 # ── Global State & Metrics ─────────────────────────────────────────────────────
 class GlobalState:
     def __init__(self):
-        self.inference: Optional[CropAlertInference] = None
+        self.inference: Optional[XyralisInference] = None
         self.start_time = time.time()
         self.total_requests = 0
         self.total_latency_ms = 0.0
@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
         # Check if path exists
         if not Path(model_path).exists():
              logger.warning(f"Model path {model_path} does not exist. Inference will fail.")
-        state.inference = CropAlertInference(model_path)
+        state.inference = XyralisInference(model_path)
         logger.info("Xyralis Inference Engine started successfully.")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")

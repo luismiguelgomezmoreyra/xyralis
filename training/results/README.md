@@ -1,6 +1,6 @@
-# CropAlert Model Fine-tuning Results
+# Xyralis Model Fine-tuning Results
 
-This directory contains the output artifacts and evaluation metrics from the fine-tuning of the `LiquidAI/LFM2-VL-7B` model for crop stress classification.
+This directory contains the output artifacts and evaluation metrics from the fine-tuning of the `LiquidAI/LFM2-VL-3B` model for crop stress classification.
 
 ## Artifacts Generated
 
@@ -12,7 +12,7 @@ This directory contains the output artifacts and evaluation metrics from the fin
 
 The table below summarizes the performance gains achieved through fine-tuning on the agricultural dataset.
 
-| Metric          | Base LFM2-VL | CropAlert FT | Delta |
+| Metric          | Base LFM2-VL | Xyralis FT | Delta |
 |-----------------|-------------|--------------|-------|
 | Accuracy        | TBD         | TBD          | TBD   |
 | F1 healthy      | TBD         | TBD          | TBD   |

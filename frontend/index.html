@@ -679,27 +679,35 @@
             checkHealth();
             setInterval(checkHealth, 5000);
 
-            pollSimulation();
-            setInterval(pollSimulation, 5000);
-
-            // Conditional refresh
-            setInterval(() => {
-                if (isSimRunning) refreshOverlay();
-            }, 30000);
-
-            analysisHistory.forEach(h => addMarkerToMap(h));
+            // Load all available parcels
+            loadAllParcels();
 
             document.addEventListener('keydown', (e) => {
                 if (e.target.tagName === 'INPUT') return;
                 if (e.key.toLowerCase() === 'd') runDemo();
                 if (e.key.toLowerCase() === 'c') clearMarkers();
-                if (e.code === 'Space') {
-                    e.preventDefault();
-                    controlSim(isSimRunning ? 'pause' : 'start');
-                }
             });
 
             runDemo();
+        }
+
+        async function loadAllParcels() {
+            try {
+                const res = await fetch(`${API_URL}/all_parcels`);
+                const data = await res.json();
+                data.forEach(p => {
+                    if (p.lat && p.lon) {
+                        addMarkerToMap({
+                            lat: p.lat,
+                            lon: p.lon,
+                            classification: p.label,
+                            stress_score: p.indices.stress_score || 50,
+                            ndvi_mean: p.indices.ndvi_mean,
+                            ...p
+                        });
+                    }
+                });
+            } catch (e) { console.error("Failed to load parcels", e); }
         }
 
         // --- Map Functions ---

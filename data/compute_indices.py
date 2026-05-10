@@ -24,10 +24,10 @@ def load_sentinel_bands(folder_path: str) -> Dict[str, np.ndarray]:
 
     # Mapeo de nombres de archivo Sentinel-2 a bandas
     band_patterns = {
-        'B04': '*B04_10m.jp2',
-        'B08': '*B08_10m.jp2',
-        'B11': '*B11_20m.jp2',
-        'B12': '*B12_20m.jp2',
+        'B04': '*B04*.jp2',
+        'B08': '*B08*.jp2',
+        'B11': '*B11*.jp2',
+        'B12': '*B12*.jp2',
     }
 
     for band_name, pattern in band_patterns.items():
@@ -47,20 +47,23 @@ def load_sentinel_bands(folder_path: str) -> Dict[str, np.ndarray]:
 
 def compute_indices(bands: Dict[str, np.ndarray]) -> Dict[str, float]:
     """
-    Calcula índices de vegetación y estrés hídrico.
-
-    Índices calculados:
-    - NDVI: Normalized Difference Vegetation Index (salud vegetal)
-    - NDWI: Normalized Difference Water Index (estrés hídrico)
-    - SWIR_RATIO: Ratio SWIR (daño foliar)
-
-    Returns:
-        Diccionario con estadísticas (media, desviación estándar)
+    Calcula índices de vegetación y estrés hídrico con reescalado de bandas.
     """
     b04 = bands['B04']
     b08 = bands['B08']
-    b11 = bands.get('B11', b08)  # fallback a B08 si no hay SWIR
-    b12 = bands.get('B12', b08)
+    
+    # Asegurar que todas las bandas tengan el mismo tamaño que B04 (10m)
+    target_shape = b04.shape
+    
+    def resize_band(band, target_shape):
+        if band.shape == target_shape:
+            return band
+        # Reescalado simple (Nearest Neighbor) usando numpy
+        zoom_factor = target_shape[0] // band.shape[0]
+        return np.repeat(np.repeat(band, zoom_factor, axis=0), zoom_factor, axis=1)[:target_shape[0], :target_shape[1]]
+
+    b11 = resize_band(bands.get('B11', b08), target_shape)
+    b12 = resize_band(bands.get('B12', b08), target_shape)
 
     eps = 1e-10
 
@@ -148,8 +151,8 @@ def process_dataset(raw_dir: str, output_json: str) -> str:
     dataset = []
     raw_path = Path(raw_dir)
 
-    # Buscar carpetas (no archivos zip)
-    folders = [f for f in raw_path.iterdir() if f.is_dir()]
+    # Buscar carpetas (MSIL2A o MSIL1C)
+    folders = [f for f in raw_path.iterdir() if f.is_dir() and ("MSIL2A" in f.name or "MSIL1C" in f.name)]
 
     print(f"Procesando {len(folders)} carpetas...")
 

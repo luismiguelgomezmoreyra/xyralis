@@ -1,5 +1,5 @@
 """
-CropAlert Dataset Validator.
+Xyralis Dataset Validator.
 Checks integrity and consistency of the generated fine-tuning dataset.
 """
 
@@ -23,7 +23,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-logger = logging.getLogger("cropalert.validate")
+logger = logging.getLogger("xyralis.validate")
 
 def validate_dataset_integrity(dataset_dir: str = "data/dataset"):
     """
@@ -145,7 +145,7 @@ def validate_dataset_integrity(dataset_dir: str = "data/dataset"):
     logger.info("=== ✓ ALL CRITICAL CHECKS PASSED ===")
 
 def main():
-    parser = argparse.ArgumentParser(description="CropAlert Dataset Validator")
+    parser = argparse.ArgumentParser(description="Xyralis Dataset Validator")
     parser.add_argument("--dataset-dir", default="data/dataset")
     args = parser.parse_args()
     

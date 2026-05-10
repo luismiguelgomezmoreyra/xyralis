@@ -1,5 +1,5 @@
 """
-CropAlert Download Pipeline.
+Xyralis Download Pipeline.
 Downloads and organizes training data from EuroSAT, BigEarthNet, and SimSat.
 """
 
@@ -27,7 +27,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-logger = logging.getLogger("cropalert.download")
+logger = logging.getLogger("xyralis.download")
 
 # ── EuroSAT ───────────────────────────────────────────────────────────────────
 def download_eurosat(output_dir: str = "data/raw/eurosat") -> int:
@@ -217,8 +217,7 @@ def download_simsat_demo_parcels(output_dir: str = "data/raw/simsat_demo") -> in
             result = client.fetch_sentinel_at(
                 lat=p["lat"], 
                 lon=p["lon"], 
-                timestamp_iso=p["ts"], 
-                return_array=True
+                timestamp_iso=p["ts"]
             )
 
             if not result.image_available:
@@ -262,7 +261,7 @@ def download_simsat_demo_parcels(output_dir: str = "data/raw/simsat_demo") -> in
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="CropAlert Data Downloader")
+    parser = argparse.ArgumentParser(description="Xyralis Data Downloader")
     parser.add_argument("--source", choices=["eurosat", "bigearth", "simsat", "all"], default="all")
     parser.add_argument("--output-dir", default="data/raw")
     args = parser.parse_args()

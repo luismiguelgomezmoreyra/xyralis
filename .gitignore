@@ -147,3 +147,14 @@ cython_debug/
 
 # PyCharm
 .idea/
+
+# Xyralis Data & Weights
+data/raw/
+data/processed/
+data/dataset/
+data/images/
+logs/
+training/weights/
+training/results/*.json
+training/results/*.png
+verify_xyralis.py

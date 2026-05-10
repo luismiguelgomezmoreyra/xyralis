@@ -4,6 +4,7 @@ Crea composiciones en falso color NIR-Red-Green que resaltan el estrés vegetal.
 """
 
 import numpy as np
+import rasterio
 from PIL import Image
 from pathlib import Path
 from typing import Dict, Optional
@@ -16,9 +17,9 @@ def load_sentinel_bands(folder_path: str) -> Dict[str, np.ndarray]:
     folder = Path(folder_path)
 
     band_patterns = {
-        'B04': '*B04_10m.jp2',
-        'B08': '*B08_10m.jp2',
-        'B03': '*B03_10m.jp2',  # Verde para el canal green
+        'B04': '*B04*.jp2',
+        'B08': '*B08*.jp2',
+        'B03': '*B03*.jp2',  # Verde para el canal green
     }
 
     for band_name, pattern in band_patterns.items():
@@ -33,6 +34,13 @@ def load_sentinel_bands(folder_path: str) -> Dict[str, np.ndarray]:
     # Si no hay B03, usar B04 como sustituto
     if 'B03' not in bands:
         bands['B03'] = bands['B04'].copy()
+
+    # Asegurar que todas las bandas tengan el mismo tamaño que B08
+    target_shape = bands['B08'].shape
+    for b in ['B04', 'B03']:
+        if bands[b].shape != target_shape:
+            zoom = target_shape[0] // bands[b].shape[0]
+            bands[b] = np.repeat(np.repeat(bands[b], zoom, axis=0), zoom, axis=1)[:target_shape[0], :target_shape[1]]
 
     return bands
 
@@ -104,7 +112,7 @@ def generate_images_from_dataset(
             for item in dataset:
                 label_map[item['folder']] = item
 
-    folders = [f for f in raw_path.iterdir() if f.is_dir()]
+    folders = [f for f in raw_path.iterdir() if f.is_dir() and ("MSIL2A" in f.name or "MSIL1C" in f.name)]
     generated = []
 
     print(f"Generando imágenes para {len(folders)} carpetas...")

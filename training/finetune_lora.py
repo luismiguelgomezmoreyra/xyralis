@@ -21,7 +21,7 @@ from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 from torch.utils.data import Dataset, DataLoader
 from transformers import (
     AutoProcessor,
-    AutoModelForCausalLM,
+    AutoModelForMultimodalLM,
     Trainer,
     TrainingArguments,
     TrainerCallback,
@@ -40,7 +40,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-logger = logging.getLogger("cropalert.finetune")
+logger = logging.getLogger("xyralis.finetune")
 
 # ── Custom Dataset ─────────────────────────────────────────────────────────────
 class CropStressDataset(Dataset):
@@ -101,11 +101,13 @@ class CropStressDataset(Dataset):
         input_ids = inputs["input_ids"][0]
         attention_mask = inputs["attention_mask"][0]
         pixel_values = inputs["pixel_values"][0] if "pixel_values" in inputs else None
+        spatial_shapes = inputs["spatial_shapes"][0] if "spatial_shapes" in inputs else None
+        pixel_attention_mask = inputs["pixel_attention_mask"][0] if "pixel_attention_mask" in inputs else None
         
         labels = input_ids.clone()
         
         # 1. Mask the prompt tokens (accurate method)
-        prompt_inputs = self.processor(
+        prompt_inputs = self.processor.tokenizer(
             text=prompt_text,
             return_tensors="pt",
             add_special_tokens=True # Full text has BOS, prompt masking must too
@@ -123,6 +125,10 @@ class CropStressDataset(Dataset):
         }
         if pixel_values is not None:
              res["pixel_values"] = pixel_values
+        if spatial_shapes is not None:
+             res["spatial_shapes"] = spatial_shapes
+        if pixel_attention_mask is not None:
+             res["pixel_attention_mask"] = pixel_attention_mask
              
         return res
 
@@ -141,6 +147,10 @@ def collate_fn(batch):
     
     if "pixel_values" in batch[0]:
         res["pixel_values"] = torch.stack([item["pixel_values"] for item in batch])
+    if "spatial_shapes" in batch[0]:
+        res["spatial_shapes"] = torch.stack([item["spatial_shapes"] for item in batch])
+    if "pixel_attention_mask" in batch[0]:
+        res["pixel_attention_mask"] = torch.stack([item["pixel_attention_mask"] for item in batch])
         
     return res
 
@@ -299,11 +309,11 @@ def evaluate_model(model, processor, test_jsonl: str, model_label: str, output_d
 def main():
     global processor
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", default="LiquidAI/LFM2-VL-7B")
+    parser.add_argument("--model_name", default="LiquidAI/LFM2-VL-3B")
     parser.add_argument("--train_jsonl", default="data/dataset/train.jsonl")
     parser.add_argument("--val_jsonl", default="data/dataset/val.jsonl")
     parser.add_argument("--test_jsonl", default="data/dataset/test.jsonl")
-    parser.add_argument("--hf_username", required=True)
+    parser.add_argument("--hf_username", default=None)
     parser.add_argument("--output_dir", default="training/weights")
     parser.add_argument("--skip_base_eval", action="store_true")
     args = parser.parse_args()
@@ -317,34 +327,33 @@ def main():
 
     # 1. Base Model Evaluation
     if not args.skip_base_eval:
-        logger.info("Loading Base Model for Evaluation...")
+        logger.info("Loading Base Model for Evaluation (CPU)...")
         base_processor = AutoProcessor.from_pretrained(args.model_name)
-        base_model = AutoModelForCausalLM.from_pretrained(
+        base_model = AutoModelForMultimodalLM.from_pretrained(
             args.model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto"
+            torch_dtype=torch.float32,
+            device_map="cpu"
         )
         base_metrics = evaluate_model(base_model, base_processor, args.test_jsonl, "base", "training/results")
         
         # Free memory
         del base_model
-        torch.cuda.empty_cache()
     else:
         base_metrics = {"accuracy": 0, "f1_healthy": 0, "f1_mild_stress": 0, "f1_severe_stress": 0, "f1_weighted": 0, "calibration_gap": 0}
 
     # 2. Loading Model for Training
-    logger.info("Loading Model for LoRA Fine-tuning...")
+    logger.info("Loading Model for LoRA Fine-tuning (CPU)...")
     processor = AutoProcessor.from_pretrained(args.model_name)
     processor.tokenizer.padding_side = "right"
     
-    model = AutoModelForCausalLM.from_pretrained(
+    model = AutoModelForMultimodalLM.from_pretrained(
         args.model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto"
+        torch_dtype=torch.float32,
+        device_map="cpu"
     )
     
-    model = prepare_model_for_kbit_training(model)
-    model.gradient_checkpointing_enable()
+    # model = prepare_model_for_kbit_training(model)
+    # model.gradient_checkpointing_enable()
 
     lora_config = LoraConfig(
         r=config["lora"]["r"],
@@ -365,7 +374,7 @@ def main():
     val_dataset = CropStressDataset(args.val_jsonl, processor, max_length=config["dataset"]["max_length"])
 
     # 4. Training
-    logger.info("Configuring Trainer...")
+    logger.info("Configuring Trainer (CPU Mode)...")
     training_args = TrainingArguments(
         output_dir=os.path.join(args.output_dir, "checkpoints"),
         num_train_epochs=config["training"]["num_train_epochs"],
@@ -374,8 +383,8 @@ def main():
         learning_rate=config["training"]["learning_rate"],
         lr_scheduler_type=config["training"]["lr_scheduler_type"],
         warmup_ratio=config["training"]["warmup_ratio"],
-        bf16=config["training"]["bf16"],
-        fp16=config["training"]["fp16"],
+        bf16=False,
+        fp16=False,
         eval_strategy=config["training"]["eval_strategy"],
         eval_steps=config["training"]["eval_steps"],
         save_strategy=config["training"]["save_strategy"],
@@ -386,8 +395,10 @@ def main():
         dataloader_drop_last=config["training"]["dataloader_drop_last"],
         dataloader_num_workers=config["dataset"]["num_workers"],
         dataloader_pin_memory=config["dataset"]["pin_memory"],
-        eval_accumulation_steps=10, # Prevent VRAM OOM by offloading predictions periodically
-        report_to="none" # Disable wandb for this run
+        eval_accumulation_steps=10, # Prevent OOM by offloading predictions periodically
+        report_to="none", # Disable wandb for this run
+        use_cpu=True,
+        resume_from_checkpoint=True
     )
 
     trainer = Trainer(
@@ -398,16 +409,23 @@ def main():
         data_collator=collate_fn,
         compute_metrics=compute_metrics,
         callbacks=[
-            EarlyStoppingCallback(early_stopping_patience=config["training"]["early_stopping_patience"]),
             LossLoggingCallback(log_path="training/results/loss_curve.json")
         ]
     )
 
     logger.info("Starting Training...")
-    trainer.train()
+    checkpoint_dir = os.path.join(args.output_dir, "checkpoints")
+    resume = True if os.path.exists(checkpoint_dir) and any(d.startswith("checkpoint") for d in os.listdir(checkpoint_dir)) else False
+    
+    if resume:
+        logger.info(f"Resuming from latest checkpoint in {checkpoint_dir}")
+        trainer.train(resume_from_checkpoint=True)
+    else:
+        logger.info("No checkpoints found. Starting fresh training.")
+        trainer.train()
 
     # 5. Save LoRA Adapter
-    lora_out = os.path.join(args.output_dir, "cropalert-lora")
+    lora_out = os.path.join(args.output_dir, "xyralis-lora")
     trainer.model.save_pretrained(lora_out)
     processor.save_pretrained(lora_out)
     logger.info("Saved LoRA adapter to %s", lora_out)
@@ -445,51 +463,54 @@ def main():
     del trainer.model
     torch.cuda.empty_cache()
 
-    logger.info("Merging LoRA adapter and exporting to HF Hub...")
-    try:
-        # Load base model again, this time to merge
-        merged_model = AutoModelForCausalLM.from_pretrained(
-            args.model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="cpu" # Load to CPU for merging
-        )
-        # Apply PEFT and merge
-        from peft import PeftModel
-        merged_model = PeftModel.from_pretrained(merged_model, lora_out)
-        merged_model = merged_model.merge_and_unload()
-        
-        merged_out = os.path.join(args.output_dir, "cropalert-merged")
-        merged_model.save_pretrained(merged_out)
-        processor.save_pretrained(merged_out)
-        logger.info("Merged model saved to %s", merged_out)
+    if args.hf_username:
+        logger.info("Merging LoRA adapter and exporting to HF Hub...")
+        try:
+            # Load base model again, this time to merge
+            merged_model = AutoModelForCausalLM.from_pretrained(
+                args.model_name,
+                torch_dtype=torch.bfloat16,
+                device_map="cpu" # Load to CPU for merging
+            )
+            # Apply PEFT and merge
+            from peft import PeftModel
+            merged_model = PeftModel.from_pretrained(merged_model, lora_out)
+            merged_model = merged_model.merge_and_unload()
+            
+            merged_out = os.path.join(args.output_dir, "xyralis-merged")
+            merged_model.save_pretrained(merged_out)
+            processor.save_pretrained(merged_out)
+            logger.info("Merged model saved to %s", merged_out)
 
-        # Push to Hub
-        repo_id = f"{args.hf_username}/cropalert-lfm2-vl"
-        lora_repo_id = f"{args.hf_username}/cropalert-lfm2-vl-lora"
-        
-        # Model Card
-        from huggingface_hub import ModelCard, ModelCardData
-        card_data = ModelCardData(
-            language='en',
-            license='apache-2.0',
-            model_name='CropAlert LFM2-VL',
-            eval_results={'accuracy': ft_metrics['accuracy']}
-        )
-        card = ModelCard.from_template(card_data)
-        
-        merged_model.push_to_hub(repo_id, commit_message="Initial commit: Merged CropAlert model")
-        processor.push_to_hub(repo_id)
-        card.push_to_hub(repo_id)
-        
-        # Reload for lora adapter push
-        temp_base = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.bfloat16, device_map="cpu")
-        final_lora_model = PeftModel.from_pretrained(temp_base, lora_out)
-        final_lora_model.push_to_hub(lora_repo_id, commit_message="Initial commit: LoRA adapter")
-        processor.push_to_hub(lora_repo_id)
-        
-        logger.info("Successfully pushed models to Hub!")
-    except Exception as e:
-         logger.error("Failed to merge and push to hub: %s", e)
+            # Push to Hub
+            repo_id = f"{args.hf_username}/xyralis-lfm2-vl"
+            lora_repo_id = f"{args.hf_username}/xyralis-lfm2-vl-lora"
+            
+            # Model Card
+            from huggingface_hub import ModelCard, ModelCardData
+            card_data = ModelCardData(
+                language='en',
+                license='apache-2.0',
+                model_name='Xyralis LFM2-VL',
+                eval_results={'accuracy': ft_metrics['accuracy']}
+            )
+            card = ModelCard.from_template(card_data)
+            
+            merged_model.push_to_hub(repo_id, commit_message="Initial commit: Merged Xyralis model")
+            processor.push_to_hub(repo_id)
+            card.push_to_hub(repo_id)
+            
+            # Reload for lora adapter push
+            temp_base = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.bfloat16, device_map="cpu")
+            final_lora_model = PeftModel.from_pretrained(temp_base, lora_out)
+            final_lora_model.push_to_hub(lora_repo_id, commit_message="Initial commit: LoRA adapter")
+            processor.push_to_hub(lora_repo_id)
+            
+            logger.info("Successfully pushed models to Hub!")
+        except Exception as e:
+             logger.error("Failed to merge and push to hub: %s", e)
+    else:
+        logger.info("Skipping merge and push to Hub (no hf_username provided).")
 
     logger.info("=== Pipeline Complete ===")
 

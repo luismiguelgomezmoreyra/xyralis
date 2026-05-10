@@ -1,312 +1,218 @@
 """
-API principal de Xyralis - Procesamiento de Sentinel-2 para agricultura.
-Endpoints para descarga, procesamiento y generación de imágenes.
+Xyralis Unified API - Satellite Data Processing & AI Inference
+Consolidated service for Sentinel-2 processing and Liquid AI analysis.
+No simulations, no mocks. 100% Real data.
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
-from typing import List, Optional
-import os
-import sys
+import asyncio
 import json
+import logging
+import os
+import time
 import subprocess
-from pathlib import Path
+from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple
 
+import httpx
+import torch
+import numpy as np
+from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from dotenv import load_dotenv
+
+from api.inference import XyralisInference, AnalysisResult
+from api.schemas import (
+    AnalyzeRequest, AnalyzeResponse, BatchAnalyzeRequest, BatchAnalyzeResponse,
+    HealthResponse, SimulationStatus, SimulationControl, MetricsResponse,
+    BatchSummary, AnalysisResultSchema
+)
 
 load_dotenv()
 
+# Setup Logging
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_DIR / "xyralis.log", mode="a"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("xyralis.app")
+
+# ── Global State & Metrics ─────────────────────────────────────────────────────
+class GlobalState:
+    def __init__(self):
+        self.inference: Optional[XyralisInference] = None
+        self.start_time = time.time()
+        self.total_requests = 0
+        self.total_latency_ms = 0.0
+        self.class_counts = {"healthy": 0, "mild_stress": 0, "severe_stress": 0, "uncertain": 0}
+        self.memory_cache: Dict[str, Dict] = {}
+
+state = GlobalState()
+
+# ── Lifespan ───────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load Model on Startup
+    model_path = os.getenv("MODEL_PATH", "training/weights/fast_model/xyralis-lora")
+    try:
+        if not Path(model_path).exists():
+             logger.warning(f"Model path {model_path} does not exist. Inference will use CPU fallback.")
+        state.inference = XyralisInference(model_path)
+        logger.info("Xyralis Inference Engine started successfully.")
+    except Exception as e:
+        logger.error(f"Failed to load model: {e}")
+    
+    yield
+    logger.info("Shutting down Xyralis API.")
+
+# ── FastAPI App ────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Xyralis API",
-    description="Procesamiento de imágenes Sentinel-2 para detección de estrés agrícola",
-    version="1.0.0"
+    description="Procesamiento de imágenes Sentinel-2 y detección de estrés agrícola con IA Real",
+    version="2.0.0",
+    lifespan=lifespan
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# === MODELOS ===
-class DownloadRequest(BaseModel):
-    footprint: Optional[str] = None
-    start_date: str = "20240601"
-    end_date: str = "20241001"
-    max_cloud_cover: int = 20
-    product_type: str = "S2MSI2A"
+app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
+app.mount("/data/images", StaticFiles(directory="data/images"), name="data_images")
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-class ProcessRequest(BaseModel):
-    raw_dir: str = "data/raw/sentinel2"
-    output_json: str = "data/processed/dataset_labels.json"
-
-
-class GenerateRequest(BaseModel):
-    raw_dir: str = "data/raw/sentinel2"
-    output_dir: str = "data/images"
-    dataset_json: str = "data/processed/dataset_labels.json"
-    image_size: tuple = (224, 224)
-
-
-class PipelineRequest(BaseModel):
-    footprint: Optional[str] = None
-    start_date: str = "20240601"
-    end_date: str = "20241001"
-    max_cloud_cover: int = 20
-
-
-# === ENDPOINTS DE ESTADO ===
-@app.get("/")
-async def root():
-    return {
-        "service": "Xyralis Sentinel-2 Processor",
-        "status": "active",
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-@app.get("/health")
-async def health_check():
-    """Verifica que las dependencias estén instaladas."""
-    try:
-        import rasterio
-        import numpy
-        from PIL import Image
-        import sentinelsat
-
-        return {
-            "status": "healthy",
-            "rasterio": rasterio.__version__,
-            "numpy": numpy.__version__,
-            "pillow": Image.__version__,
-            "sentinelsat": sentinelsat.__version__,
-            "copernicus_credentials": bool(os.getenv("COPERNICUS_USER"))
-        }
-    except ImportError as e:
-        raise HTTPException(status_code=500, detail=f"Missing dependency: {e}")
-
-
-# === ENDPOINTS DE DESCARGA ===
-@app.post("/download")
-async def download_sentinel_images(request: DownloadRequest):
-    """
-    Descarga imágenes Sentinel-2 desde Copernicus Hub.
-    """
-    try:
-        from data.download_sentinel2 import download_sentinel2
-
-        result = download_sentinel2(
-            footprint=request.footprint,
-            start_date=request.start_date,
-            end_date=request.end_date,
-            max_cloud_cover=request.max_cloud_cover,
-            product_type=request.product_type
-        )
-
-        return {
-            "status": "success",
-            "downloaded_files": len(result),
-            "output_dir": "data/raw/sentinel2"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/unpack")
-async def unpack_zip_files():
-    """
-    Descomprime archivos ZIP descargados.
-    """
-    try:
-        from data.unpack_sentinel2 import unpack_sentinel2_zips
-
-        extracted = unpack_sentinel2_zips("data/raw/sentinel2")
-
-        return {
-            "status": "success",
-            "extracted_folders": len(extracted),
-            "folders": extracted
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# === ENDPOINTS DE PROCESAMIENTO ===
-@app.post("/compute")
-async def compute_indices_endpoint(request: ProcessRequest):
-    """
-    Calcula índices espectrales para todas las carpetas procesadas.
-    Genera JSON con etiquetas de estrés vegetal.
-    """
-    try:
-        from data.compute_indices import process_dataset
-
-        output_json = process_dataset(request.raw_dir, request.output_json)
-
-        # Leer y devolver resultados
-        with open(output_json, 'r') as f:
-            dataset = json.load(f)
-
-        return {
-            "status": "success",
-            "samples_processed": len(dataset),
-            "output_json": output_json,
-            "data": dataset
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/dataset")
-async def get_dataset():
-    """
-    Devuelve el dataset procesado completo.
-    """
-    dataset_path = "data/processed/dataset_labels.json"
-    if not Path(dataset_path).exists():
-        raise HTTPException(status_code=404, detail="Dataset no encontrado. Ejecuta /compute primero.")
-
-    with open(dataset_path, 'r') as f:
-        dataset = json.load(f)
-
-    return dataset
-
-
-# === ENDPOINTS DE GENERACIÓN DE IMÁGENES ===
-@app.post("/generate-images")
-async def generate_images_endpoint(request: GenerateRequest):
-    """
-    Genera imágenes de entrada para modelo LFM2-VL (falso color NIR-Red-Green).
-    """
-    try:
-        from data.generate_images import generate_images_from_dataset
-
-        generated = generate_images_from_dataset(
-            raw_dir=request.raw_dir,
-            output_dir=request.output_dir,
-            dataset_json=request.dataset_json,
-            size=request.image_size
-        )
-
-        return {
-            "status": "success",
-            "images_generated": len(generated),
-            "output_dir": request.output_dir,
-            "images": generated
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/images")
-async def list_images():
-    """
-    Lista todas las imágenes generadas.
-    """
-    images_dir = Path("data/images")
-    if not images_dir.exists():
-        raise HTTPException(status_code=404, detail="No hay imágenes generadas.")
-
-    images = list(images_dir.glob("*.png"))
-    return {
-        "count": len(images),
-        "images": [str(img) for img in images]
-    }
-
-
-# === ENDPOINT DE PIPELINE COMPLETO ===
-@app.post("/pipeline")
-async def run_full_pipeline(
-    request: PipelineRequest,
-    background_tasks: BackgroundTasks
-):
-    """
-    Ejecuta el flujo completo: descarga → descompresión → procesamiento → imágenes.
-
-    Retorna inmediatamente y ejecuta en segundo plano.
-    """
-    def run_pipeline():
-        try:
-            print("=== Iniciando pipeline Sentinel-2 ===\n")
-
-            # 1. Descargar
-            print("[1/4] Descargando imágenes...")
-            from data.download_sentinel2 import download_sentinel2
-            download_sentinel2(
-                footprint=request.footprint,
-                start_date=request.start_date,
-                end_date=request.end_date,
-                max_cloud_cover=request.max_cloud_cover
-            )
-
-            # 2. Descomprimir
-            print("\n[2/4] Descomprimiendo archivos...")
-            from data.unpack_sentinel2 import unpack_sentinel2_zips
-            unpack_sentinel2_zips("data/raw/sentinel2")
-
-            # 3. Calcular índices
-            print("\n[3/4] Calculando índices espectrales...")
-            from data.compute_indices import process_dataset
-            process_dataset("data/raw/sentinel2", "data/processed/dataset_labels.json")
-
-            # 4. Generar imágenes
-            print("\n[4/4] Generando imágenes para modelo...")
-            from data.generate_images import generate_images_from_dataset
-            generate_images_from_dataset(
-                raw_dir="data/raw/sentinel2",
-                output_dir="data/images",
-                dataset_json="data/processed/dataset_labels.json"
-            )
-
-            print("\n=== Pipeline completado exitosamente ===")
-
-        except Exception as e:
-            print(f"\nERROR en pipeline: {e}")
-            import traceback
-            traceback.print_exc()
-
-    # Ejecutar en segundo plano
-    background_tasks.add_task(run_pipeline)
-
-    return {
-        "status": "started",
-        "message": "Pipeline ejecutándose en segundo plano",
-        "parameters": request.dict()
-    }
-
-
-# === ENDPOINTS DE DATOS ===
-@app.get("/stats")
-async def get_statistics():
-    """
-    Devuelve estadísticas del dataset procesado.
-    """
+def get_real_data_for_coords(lat: float, lon: float) -> Optional[Dict[str, Any]]:
+    """Finds the closest local Sentinel-2 product for given coordinates."""
     dataset_path = Path("data/processed/dataset_labels.json")
     if not dataset_path.exists():
-        raise HTTPException(status_code=404, detail="Dataset no encontrado")
-
-    with open(dataset_path, 'r') as f:
+        return None
+        
+    with open(dataset_path) as f:
         dataset = json.load(f)
-
-    # Calcular estadísticas
-    total = len(dataset)
-    labels = {}
-    ndvi_values = []
-
-    for item in dataset:
-        label = item['label']
-        labels[label] = labels.get(label, 0) + 1
-        ndvi_values.append(item['indices']['ndvi_mean'])
-
+        
+    if not dataset:
+        return None
+        
+    # Simple distance search
+    def dist(p):
+        return (p.get("lat", 0) - lat)**2 + (p.get("lon", 0) - lon)**2
+        
+    closest = min(dataset, key=dist)
+    
+    # Threshold check: only use if within ~100km (approx 1 degree)
+    if dist(closest) > 1.0:
+        return None
+        
+    img_name = f"{closest['filename']}_{closest['label']}.png"
+    img_path = Path("data/images") / img_name
+    
     return {
-        "total_samples": total,
-        "label_distribution": labels,
-        "ndvi_stats": {
-            "mean": float(np.mean(ndvi_values)) if ndvi_values else None,
-            "std": float(np.std(ndvi_values)) if ndvi_values else None,
-            "min": float(min(ndvi_values)) if ndvi_values else None,
-            "max": float(max(ndvi_values)) if ndvi_values else None
+        "image_path": str(img_path),
+        "indices": closest["indices"],
+        "metadata": {
+            "product_id": closest["filename"],
+            "lat": closest.get("lat"),
+            "lon": closest.get("lon"),
+            "source": "Sentinel-2 L1C/L2A"
         }
     }
 
+# ── Endpoints ──────────────────────────────────────────────────────────────────
+
+@app.get("/")
+async def root():
+    return FileResponse("frontend/index.html")
+
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    return {
+        "status": "healthy",
+        "model_loaded": state.inference is not None,
+        "simsat_available": False,
+        "uptime_seconds": time.time() - state.start_time,
+        "model_version": state.inference.model_version if state.inference else "none"
+    }
+
+@app.get("/all_parcels")
+async def get_all_parcels():
+    """Returns all real processed sentinel parcels."""
+    dataset_path = Path("data/processed/dataset_labels.json")
+    if not dataset_path.exists():
+        return []
+    with open(dataset_path) as f:
+        return json.load(f)
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze_parcel(req: AnalyzeRequest):
+    state.total_requests += 1
+    
+    # 1. Look for REAL local data
+    data = get_real_data_for_coords(req.latitude, req.longitude)
+    if not data:
+        raise HTTPException(status_code=404, detail="No real Sentinel-2 data available for these coordinates. Please click on a green marker.")
+    
+    try:
+        # 2. IA Inference on REAL image
+        result: AnalysisResult = state.inference.analyze(data["image_path"], data["indices"])
+        
+        state.total_latency_ms += result.inference_latency_ms
+        state.class_counts[result.classification] += 1
+        
+        return {
+            "analysis": result.__dict__,
+            "image_urls": {
+                "sentinel_png": f"/data/images/{Path(data['image_path']).name}",
+                "mapbox_png": "" # Real mapbox requires key, using Leaflet instead
+            },
+            "satellite_metadata": data["metadata"]
+        }
+
+    except Exception as e:
+        logger.error(f"Analysis error: {e}")
+        raise HTTPException(status_code=500, detail=f"IA Engine Error: {str(e)}")
+
+@app.get("/demo")
+async def run_random_real_demo():
+    """Selects a random real product and analyzes it."""
+    dataset_path = Path("data/processed/dataset_labels.json")
+    if not dataset_path.exists():
+        raise HTTPException(status_code=404, detail="No data processed.")
+    with open(dataset_path) as f:
+        dataset = json.load(f)
+    
+    sample = dataset[np.random.randint(0, len(dataset))]
+    return await analyze_parcel(AnalyzeRequest(latitude=sample["lat"], longitude=sample["lon"]))
+
+# --- Maintenance Endpoints (Real actions) ---
+
+@app.post("/unpack")
+async def unpack_new_data():
+    from data.unpack_sentinel2 import unpack_sentinel2_zips
+    extracted = unpack_sentinel2_zips("data/raw/sentinel2")
+    return {"status": "success", "extracted": extracted}
+
+@app.post("/compute")
+async def recompute_indices():
+    from data.compute_indices import process_dataset
+    from data.add_coords import update_labels
+    process_dataset("data/raw/sentinel2", "data/processed/dataset_labels.json")
+    update_labels() # Re-extract coords
+    return {"status": "success"}
 
 if __name__ == "__main__":
     import uvicorn

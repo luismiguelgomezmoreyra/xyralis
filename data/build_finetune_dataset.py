@@ -1,5 +1,5 @@
 """
-CropAlert Dataset Builder.
+Xyralis Dataset Builder.
 Processes raw data into JSONL format for LFM2-VL fine-tuning.
 """
 
@@ -25,7 +25,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-logger = logging.getLogger("cropalert.build")
+logger = logging.getLogger("xyralis.build")
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def compute_indices_for_npy(npy_path: str) -> Optional[Dict[str, float]]:
@@ -134,45 +134,30 @@ def build_prompt(indices: Dict[str, float], stress_class: str, reasoning: str, v
 
 # ── Data Loading ───────────────────────────────────────────────────────────────
 def load_all_samples(raw_dir: str = "data/raw") -> List[Dict]:
-    """Load from EuroSAT, BigEarth, and SimSat."""
+    """Load from Sentinel-2 (processed) and SimSat."""
     samples = []
     base = Path(raw_dir)
     
-    # 1. EuroSAT
-    eurosat_csv = base / "eurosat" / "metadata.csv"
-    if eurosat_csv.exists():
-        df = pd.read_csv(eurosat_csv)
-        for _, row in df.iterrows():
-            # For EuroSAT (RGB/PNG), we might need indices from elsewhere or compute proxy
-            # In a real pipeline, we'd use the .npy version if available.
-            # Here we try to find a .npy sibling if it exists.
-            npy_path = Path(row["path"]).with_suffix(".npy")
-            indices = compute_indices_for_npy(str(npy_path)) if npy_path.exists() else {"ndvi_mean": 0.6, "ndwi_mean": 0.0, "stress_score": 10.0}
+    # 1. Sentinel-2 Processed
+    processed_json = base.parent / "processed" / "dataset_labels.json"
+    if processed_json.exists():
+        with open(processed_json) as f:
+            dataset = json.load(f)
+        for item in dataset:
+            # Reconstruct image path if needed. 
+            # In dataset_labels.json, we have 'folder' and 'filename' and 'label'
+            # The images are in data/images/ with name {filename}_{label}.png
+            img_name = f"{item['filename']}_{item['label']}.png"
+            img_path = base.parent / "images" / img_name
             
             samples.append({
-                "image_path": row["path"],
-                "indices": indices,
-                "raw_label": row["class"],
-                "split": row["split"]
+                "image_path": str(img_path),
+                "indices": item["indices"],
+                "raw_label": f"Sentinel2_{item['label']}",
+                "split": "train" # Most existing S2 data for training
             })
             
-    # 2. BigEarthNet
-    be_dir = base / "bigearth"
-    if be_dir.exists():
-        for json_file in be_dir.glob("*.json"):
-            with open(json_file) as f:
-                meta = json.load(f)
-            npy_path = json_file.with_suffix(".npy")
-            indices = compute_indices_for_npy(str(npy_path))
-            if indices:
-                samples.append({
-                    "image_path": str(npy_path),
-                    "indices": indices,
-                    "raw_label": ", ".join(meta["labels"]),
-                    "split": "train" # BigEarth is only train in this demo
-                })
-                
-    # 3. SimSat
+    # 2. SimSat
     simsat_manifest = base / "simsat_demo" / "manifest.json"
     if simsat_manifest.exists():
         with open(simsat_manifest) as f:
@@ -184,10 +169,17 @@ def load_all_samples(raw_dir: str = "data/raw") -> List[Dict]:
                 "image_path": entry["image_path"],
                 "indices": indices,
                 "raw_label": f"SimSat_{entry['name']}",
-                "split": "test" # SimSat for evaluation
+                "split": "val" if np.random.random() < 0.2 else "train"
             })
             
-    logger.info("Loaded %d samples from raw sources", len(samples))
+    # Also add test samples from SimSat if we have enough
+    if len(samples) > 10:
+        # Re-assign some to test
+        for i in range(len(samples)):
+            if i % 5 == 0:
+                samples[i]["split"] = "test"
+
+    logger.info("Loaded %d samples from Sentinel-2 sources", len(samples))
     return samples
 
 # ── Saving ─────────────────────────────────────────────────────────────────────
@@ -249,7 +241,7 @@ def save_dataset(samples: List[Dict], output_dir: str = "data/dataset"):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="CropAlert Dataset Builder")
+    parser = argparse.ArgumentParser(description="Xyralis Dataset Builder")
     parser.add_argument("--raw-dir", default="data/raw")
     parser.add_argument("--output-dir", default="data/dataset")
     args = parser.parse_args()
